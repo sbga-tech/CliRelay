@@ -290,3 +290,48 @@ func TestRegisterModelsForAuth_AddsOpenRouterAnthropicModelConfigsForOAuthProvid
 		t.Fatal("expected OpenRouter-synced Anthropic model config to be registered for Claude OAuth auth")
 	}
 }
+
+func TestRegisterModelsForAuth_AddsClaudeCodeModelConfigsForOAuthProvider(t *testing.T) {
+	usage.CloseDB()
+	dbPath := filepath.Join(t.TempDir(), "usage.db")
+	if err := usage.InitDB(dbPath, internalconfig.RequestLogStorageConfig{}, time.UTC); err != nil {
+		t.Fatalf("InitDB() error = %v", err)
+	}
+	t.Cleanup(usage.CloseDB)
+
+	const modelID = "claude-code-custom-model"
+	if err := usage.UpsertModelConfig(usage.ModelConfigRow{
+		ModelID:     modelID,
+		OwnedBy:     "claude-code",
+		Description: "Claude Code model library entry",
+		Enabled:     true,
+		Source:      "seed",
+	}); err != nil {
+		t.Fatalf("UpsertModelConfig() error = %v", err)
+	}
+
+	service := &Service{cfg: &config.Config{}}
+	auth := &coreauth.Auth{
+		ID:       "claude-oauth-claude-code-models",
+		Provider: "claude",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "oauth",
+		},
+		Metadata: map[string]any{
+			"email": "claude@example.com",
+		},
+	}
+
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	if !hasModelID(registry.GetAvailableModelsByProvider("claude"), modelID) {
+		t.Fatal("expected Claude Code model config to be registered for Claude OAuth auth")
+	}
+}

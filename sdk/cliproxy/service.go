@@ -1532,7 +1532,7 @@ func modelConfigOwnerAliases(provider string) map[string]struct{} {
 	values := []string{provider}
 	switch provider {
 	case "claude":
-		values = append(values, "anthropic")
+		values = append(values, "anthropic", "claude-code")
 	case "gemini", "gemini-cli", "vertex":
 		values = append(values, "google")
 	case "codex":
