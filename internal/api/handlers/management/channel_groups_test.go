@@ -580,6 +580,219 @@ func TestBuildChannelGroupItemsMarksDisabledOpenAICompatChannels(t *testing.T) {
 	}
 }
 
+func TestBuildChannelGroupItemsMarksProviderKeysWithDisableAllModelsRule(t *testing.T) {
+	cfg := &config.Config{
+		CodexKey: []config.CodexKey{
+			{
+				APIKey:         "sk-codex-disabled",
+				Name:           "Codex Disabled",
+				Prefix:         "team-codex",
+				ExcludedModels: []string{"*"},
+			},
+			{
+				APIKey: "sk-codex-enabled",
+				Name:   "Codex Enabled",
+				Prefix: "team-codex",
+			},
+		},
+		OpenCodeGoKey: []config.OpenCodeGoKey{
+			{
+				APIKey:         "sk-opencode-disabled",
+				Name:           "OpenCode Disabled",
+				Prefix:         "team-opencode",
+				ExcludedModels: []string{"minimax-m2.5", "*"},
+			},
+		},
+	}
+	auths := []*coreauth.Auth{
+		{
+			ID:       "config-codex-disabled",
+			Label:    "Codex Disabled",
+			Prefix:   "team-codex",
+			Provider: "codex",
+			Status:   coreauth.StatusActive,
+			Attributes: map[string]string{
+				"auth_kind":       "apikey",
+				"excluded_models": "*",
+				"source":          "config:codex[disabled]",
+			},
+		},
+		{
+			ID:       "config-codex-enabled",
+			Label:    "Codex Enabled",
+			Prefix:   "team-codex",
+			Provider: "codex",
+			Status:   coreauth.StatusActive,
+			Attributes: map[string]string{
+				"auth_kind": "apikey",
+				"source":    "config:codex[enabled]",
+			},
+		},
+		{
+			ID:       "config-opencode-disabled",
+			Label:    "OpenCode Disabled",
+			Prefix:   "team-opencode",
+			Provider: "opencode-go",
+			Status:   coreauth.StatusActive,
+			Attributes: map[string]string{
+				"auth_kind":       "apikey",
+				"excluded_models": "minimax-m2.5,*",
+				"source":          "config:opencode-go[disabled]",
+			},
+		},
+	}
+
+	items := buildChannelGroupItems(cfg, auths)
+	byName := make(map[string]channelGroupItem, len(items))
+	for _, item := range items {
+		byName[item.Name] = item
+	}
+
+	codexGroup, ok := byName["team-codex"]
+	if !ok {
+		t.Fatal("expected team-codex group for configured Codex channels")
+	}
+	if len(codexGroup.ChannelDetails) != 2 {
+		t.Fatalf("codex channel details = %#v, want two details", codexGroup.ChannelDetails)
+	}
+	codexDetails := make(map[string]channelGroupChannelDetail, len(codexGroup.ChannelDetails))
+	for _, detail := range codexGroup.ChannelDetails {
+		codexDetails[detail.Name] = detail
+	}
+	if !codexDetails["Codex Disabled"].Disabled {
+		t.Fatalf("Codex Disabled detail = %#v, want disabled=true", codexDetails["Codex Disabled"])
+	}
+	if codexDetails["Codex Enabled"].Disabled {
+		t.Fatalf("Codex Enabled detail = %#v, want disabled=false", codexDetails["Codex Enabled"])
+	}
+
+	opencodeGroup, ok := byName["team-opencode"]
+	if !ok {
+		t.Fatal("expected team-opencode group for configured OpenCode Go channel")
+	}
+	if len(opencodeGroup.ChannelDetails) != 1 {
+		t.Fatalf("opencode channel details = %#v, want one detail", opencodeGroup.ChannelDetails)
+	}
+	if !opencodeGroup.ChannelDetails[0].Disabled {
+		t.Fatalf("OpenCode detail = %#v, want disabled=true", opencodeGroup.ChannelDetails[0])
+	}
+}
+
+func TestBuildChannelGroupItemsKeepsConfigDisabledStateWhenSynthesizedAuthIsStale(t *testing.T) {
+	cfg := &config.Config{
+		CodexKey: []config.CodexKey{
+			{
+				APIKey:         "sk-codex-disabled",
+				Name:           "Codex Disabled",
+				Prefix:         "team-codex",
+				ExcludedModels: []string{"*"},
+			},
+		},
+	}
+	auths := []*coreauth.Auth{
+		{
+			ID:       "config-codex-stale",
+			Label:    "Codex Disabled",
+			Prefix:   "team-codex",
+			Provider: "codex",
+			Status:   coreauth.StatusActive,
+			Attributes: map[string]string{
+				"auth_kind": "apikey",
+				"source":    "config:codex[stale]",
+			},
+		},
+	}
+
+	items := buildChannelGroupItems(cfg, auths)
+	byName := make(map[string]channelGroupItem, len(items))
+	for _, item := range items {
+		byName[item.Name] = item
+	}
+
+	codexGroup, ok := byName["team-codex"]
+	if !ok {
+		t.Fatal("expected team-codex group")
+	}
+	if len(codexGroup.ChannelDetails) != 1 {
+		t.Fatalf("codex channel details = %#v, want one deduped detail", codexGroup.ChannelDetails)
+	}
+	if !codexGroup.ChannelDetails[0].Disabled {
+		t.Fatalf("Codex detail = %#v, want disabled=true from latest config", codexGroup.ChannelDetails[0])
+	}
+}
+
+func TestBuildChannelGroupItemsKeepsConfigEnabledStateWhenSynthesizedAuthIsStale(t *testing.T) {
+	cfg := &config.Config{
+		CodexKey: []config.CodexKey{
+			{
+				APIKey: "sk-codex-enabled",
+				Name:   "Codex Enabled",
+				Prefix: "team-codex",
+			},
+		},
+	}
+	auths := []*coreauth.Auth{
+		{
+			ID:       "config-codex-stale-disabled",
+			Label:    "Codex Enabled",
+			Prefix:   "team-codex",
+			Provider: "codex",
+			Status:   coreauth.StatusActive,
+			Attributes: map[string]string{
+				"auth_kind":       "apikey",
+				"excluded_models": "*",
+				"source":          "config:codex[stale-disabled]",
+			},
+		},
+	}
+
+	items := buildChannelGroupItems(cfg, auths)
+	byName := make(map[string]channelGroupItem, len(items))
+	for _, item := range items {
+		byName[item.Name] = item
+	}
+
+	codexGroup, ok := byName["team-codex"]
+	if !ok {
+		t.Fatal("expected team-codex group")
+	}
+	if len(codexGroup.ChannelDetails) != 1 {
+		t.Fatalf("codex channel details = %#v, want one deduped detail", codexGroup.ChannelDetails)
+	}
+	if codexGroup.ChannelDetails[0].Disabled {
+		t.Fatalf("Codex detail = %#v, want disabled=false from latest config", codexGroup.ChannelDetails[0])
+	}
+}
+
+func TestCollectKnownChannelsIncludesBedrockConfigChannels(t *testing.T) {
+	cfg := &config.Config{
+		BedrockKey: []config.BedrockKey{
+			{
+				Name:            "Bedrock SigV4",
+				AuthMode:        config.BedrockAuthModeSigV4,
+				AccessKeyID:     "AKIA",
+				SecretAccessKey: "SECRET",
+			},
+			{
+				Name:     "Bedrock API",
+				AuthMode: config.BedrockAuthModeAPIKey,
+				APIKey:   "bedrock-api-key",
+			},
+		},
+	}
+
+	known, err := collectKnownChannels(cfg, nil, "")
+	if err != nil {
+		t.Fatalf("collectKnownChannels() error = %v", err)
+	}
+	if got := known["bedrock sigv4"].Canonical; got != "Bedrock SigV4" {
+		t.Fatalf("Bedrock SigV4 canonical = %q, want Bedrock SigV4", got)
+	}
+	if got := known["bedrock api"].Canonical; got != "Bedrock API" {
+		t.Fatalf("Bedrock API canonical = %q, want Bedrock API", got)
+	}
+}
+
 func TestBuildChannelGroupItemsDoesNotSurfaceDeletedConfiguredChannels(t *testing.T) {
 	cfg := &config.Config{
 		Routing: config.RoutingConfig{
