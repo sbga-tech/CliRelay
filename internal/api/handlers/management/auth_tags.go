@@ -248,9 +248,10 @@ func metadataString(metadata map[string]any, keys ...string) string {
 }
 
 type channelGroupChannelDetail struct {
-	Name              string   `json:"name"`
-	Source            string   `json:"source,omitempty"`
-	Disabled          bool     `json:"disabled,omitempty"`
+	Name              string `json:"name"`
+	Source            string `json:"source,omitempty"`
+	Disabled          bool   `json:"disabled,omitempty"`
+	disabledAuthority int
 	DefaultTags       []string `json:"default_tags"`
 	CustomTags        []string `json:"custom_tags"`
 	HiddenDefaultTags []string `json:"hidden_default_tags"`
@@ -282,8 +283,20 @@ func uniqueSortedChannelDetails(values []channelGroupChannelDetail) []channelGro
 		}
 		key := strings.ToLower(name)
 		existing, ok := seen[key]
-		if !ok || tagPayloadScore(value) >= tagPayloadScore(existing) {
+		if !ok {
 			seen[key] = value
+			continue
+		}
+
+		disabled := mergedChannelDisabled(existing, value)
+		if tagPayloadScore(value) >= tagPayloadScore(existing) {
+			value.Disabled = disabled
+			value.disabledAuthority = max(existing.disabledAuthority, value.disabledAuthority)
+			seen[key] = value
+		} else {
+			existing.Disabled = disabled
+			existing.disabledAuthority = max(existing.disabledAuthority, value.disabledAuthority)
+			seen[key] = existing
 		}
 	}
 	if len(seen) == 0 {
@@ -300,9 +313,15 @@ func uniqueSortedChannelDetails(values []channelGroupChannelDetail) []channelGro
 }
 
 func tagPayloadScore(value channelGroupChannelDetail) int {
-	score := len(value.DisplayTags)*100 + len(value.DefaultTags)*10 + len(value.CustomTags)
-	if value.Disabled {
-		score -= 10000
+	return len(value.DisplayTags)*100 + len(value.DefaultTags)*10 + len(value.CustomTags)
+}
+
+func mergedChannelDisabled(existing channelGroupChannelDetail, value channelGroupChannelDetail) bool {
+	if existing.disabledAuthority > value.disabledAuthority {
+		return existing.Disabled
 	}
-	return score
+	if value.disabledAuthority > existing.disabledAuthority {
+		return value.Disabled
+	}
+	return existing.Disabled || value.Disabled
 }

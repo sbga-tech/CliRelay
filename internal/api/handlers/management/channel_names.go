@@ -130,6 +130,14 @@ func collectKnownChannelsWithPolicy(cfg *config.Config, auths []*coreauth.Auth, 
 				return nil, err
 			}
 		}
+		for _, entry := range cfg.BedrockKey {
+			if strings.TrimSpace(entry.GetAPIKey()) == "" {
+				continue
+			}
+			if err := addKnownChannelWithPolicy(known, entry.Name, entry.Name, "Bedrock API key config", failOnConflict); err != nil {
+				return nil, err
+			}
+		}
 		for _, entry := range cfg.CodexKey {
 			if strings.TrimSpace(entry.APIKey) == "" {
 				continue
