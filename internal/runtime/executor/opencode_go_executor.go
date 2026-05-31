@@ -84,6 +84,13 @@ func (e *OpenCodeGoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	if !fallback.Applied {
 		req = e.sanitizeHistoricalImagesForTextModel(req)
 	}
+
+	// Inject cached reasoning_content for models that need it (e.g., DeepSeek thinking mode).
+	sessionID := opencodeGoSessionID(opts)
+	if opencodeGoNeedsReasoningInjection(req.Model) && sessionID != "" {
+		req.Payload = opencodeGoInjectReasoningContentIntoPayload(req.Payload, req.Model, sessionID)
+	}
+
 	var resp cliproxyexecutor.Response
 	var err error
 	if opencodeGoUsesMessages(req.Model) {
@@ -91,8 +98,17 @@ func (e *OpenCodeGoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	} else {
 		resp, err = e.openAIExecutor().Execute(ctx, opencodeGoAuthWithBaseURL(auth), req, opts)
 	}
-	if err != nil || !fallback.Applied {
+	if err != nil {
 		return resp, err
+	}
+
+	// Capture reasoning_content from the upstream response for caching.
+	if opencodeGoNeedsReasoningInjection(req.Model) && sessionID != "" {
+		opencodeGoCacheReasoningFromNonStream(resp.Payload, req.Model, sessionID)
+	}
+
+	if !fallback.Applied {
+		return resp, nil
 	}
 	resp.Payload = opencodeGoRewriteFallbackResponseModel(resp.Payload, fallback.OriginalModel)
 	return resp, nil
@@ -104,6 +120,12 @@ func (e *OpenCodeGoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	if !fallback.Applied {
 		req = e.sanitizeHistoricalImagesForTextModel(req)
 	}
+	// Inject cached reasoning_content for models that need it (e.g., DeepSeek thinking mode).
+	sessionID := opencodeGoSessionID(opts)
+	if opencodeGoNeedsReasoningInjection(req.Model) && sessionID != "" {
+		req.Payload = opencodeGoInjectReasoningContentIntoPayload(req.Payload, req.Model, sessionID)
+	}
+
 	var result *cliproxyexecutor.StreamResult
 	var err error
 	if opencodeGoUsesMessages(req.Model) {
@@ -111,9 +133,20 @@ func (e *OpenCodeGoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	} else {
 		result, err = e.openAIExecutor().ExecuteStream(ctx, opencodeGoAuthWithBaseURL(auth), req, opts)
 	}
-	if err != nil || !fallback.Applied {
+	if err != nil {
 		return result, err
 	}
+
+	// Wrap stream to capture reasoning_content from streaming chunks.
+	// This must happen before the fallback check so non-fallback requests also get caching.
+	if opencodeGoNeedsReasoningInjection(req.Model) && sessionID != "" {
+		result = opencodeGoWrapStreamCacheReasoning(result, req.Model, sessionID)
+	}
+
+	if !fallback.Applied {
+		return result, nil
+	}
+
 	return opencodeGoRewriteFallbackStreamResult(result, fallback.OriginalModel), nil
 }
 
