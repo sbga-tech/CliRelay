@@ -479,21 +479,24 @@ func opencodeGoCurrentValueHasImage(value any) (bool, bool) {
 }
 
 func opencodeGoLatestUserMessageHasImage(messages []any) (bool, bool) {
-	for i := len(messages) - 1; i >= 0; i-- {
-		message, ok := messages[i].(map[string]any)
-		if !ok {
-			continue
-		}
-		role, _ := message["role"].(string)
-		if !strings.EqualFold(strings.TrimSpace(role), "user") {
-			continue
-		}
-		if content, ok := message["content"]; ok {
-			return opencodeGoValueHasImage(content), true
-		}
-		return opencodeGoValueHasImage(message), true
+	// Only check the VERY LAST message. Scanning backwards for any user
+	// message causes the vision fallback to trigger on follow-up tool-call
+	// requests where the most recent user message is an old image message.
+	if len(messages) == 0 {
+		return false, false
 	}
-	return false, false
+	message, ok := messages[len(messages)-1].(map[string]any)
+	if !ok {
+		return false, false
+	}
+	role, _ := message["role"].(string)
+	if !strings.EqualFold(strings.TrimSpace(role), "user") {
+		return false, false
+	}
+	if content, ok := message["content"]; ok {
+		return opencodeGoValueHasImage(content), true
+	}
+	return opencodeGoValueHasImage(message), true
 }
 
 func opencodeGoInputHasImage(input any) (bool, bool) {
