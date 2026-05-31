@@ -1771,8 +1771,8 @@ func AuthMiddleware(manager *sdkaccess.Manager) gin.HandlerFunc {
 	}
 }
 
-// modelRestrictionMiddleware enforces model restrictions from API key config
-// and route-scoped channel-group allowed-models before a request reaches an upstream.
+// modelRestrictionMiddleware enforces model restrictions from API key config,
+// route-scoped channel-group allowed-models, and CC switch route model mappings.
 func (s *Server) modelRestrictionMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Only check POST requests (GET /models etc. don't need restriction)
@@ -1793,18 +1793,57 @@ func (s *Server) modelRestrictionMiddleware() gin.HandlerFunc {
 			routeGroup = route.Group
 		}
 		allowedGroups := allowedChannelGroupsFromAccessMetadata(c)
-		if allowedStr == "" && !s.hasScopedRoutingModelRestriction(routeGroup, allowedGroups) {
+
+		// Build CC switch route model restrictions (target-models + request-models + default-model)
+		var ccSwitchAllowed map[string]struct{}
+		if route != nil && route.CcSwitch != nil {
+			ccSwitchAllowed = make(map[string]struct{})
+			for _, mapping := range route.CcSwitch.ModelMappings {
+				if t := strings.TrimSpace(mapping.TargetModel); t != "" {
+					ccSwitchAllowed[t] = struct{}{}
+				}
+				if r := strings.TrimSpace(mapping.RequestModel); r != "" {
+					ccSwitchAllowed[r] = struct{}{}
+				}
+			}
+			if dm := strings.TrimSpace(route.CcSwitch.DefaultModel); dm != "" {
+				ccSwitchAllowed[dm] = struct{}{}
+			}
+			if len(ccSwitchAllowed) == 0 {
+				ccSwitchAllowed = nil
+			}
+		}
+
+		hasScopedRestriction := s.hasScopedRoutingModelRestriction(routeGroup, allowedGroups)
+		if allowedStr == "" && !hasScopedRestriction && ccSwitchAllowed == nil {
 			// No restriction — allow all models
 			c.Next()
 			return
 		}
 
 		// Parse allowed models into a set
-		allowedModels := make(map[string]struct{})
-		for _, m := range strings.Split(allowedStr, ",") {
-			trimmed := strings.TrimSpace(m)
-			if trimmed != "" {
-				allowedModels[trimmed] = struct{}{}
+		var allowedModels map[string]struct{}
+		if allowedStr != "" {
+			allowedModels = make(map[string]struct{})
+			for _, m := range strings.Split(allowedStr, ",") {
+				trimmed := strings.TrimSpace(m)
+				if trimmed != "" {
+					allowedModels[trimmed] = struct{}{}
+				}
+			}
+		}
+
+		// Merge CC switch route model restrictions
+		if ccSwitchAllowed != nil {
+			if len(allowedModels) == 0 {
+				allowedModels = ccSwitchAllowed
+			} else {
+				// Intersection: model must be in both
+				for m := range allowedModels {
+					if _, ok := ccSwitchAllowed[m]; !ok {
+						delete(allowedModels, m)
+					}
+				}
 			}
 		}
 		// Read the body to extract the model field
