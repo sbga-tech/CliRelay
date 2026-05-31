@@ -90,7 +90,12 @@ func (e *OpenCodeGoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	if opencodeGoNeedsReasoningInjection(req.Model) && sessionID != "" {
 		req.Payload = opencodeGoInjectReasoningContentIntoPayload(req.Payload, req.Model, sessionID)
 	}
-
+		// Inject Computer Use function tools for models that need them.
+		// Codex Desktop skips mcp__computer_use__ when routing through /v1/messages,
+		// so DeepSeek models don't see Computer Use capabilities.
+		if opencodeGoNeedsReasoningInjection(req.Model) {
+			req.Payload = opencodeGoInjectComputerUseTools(req.Payload)
+		}
 	var resp cliproxyexecutor.Response
 	var err error
 	if opencodeGoUsesMessages(req.Model) {
@@ -125,7 +130,12 @@ func (e *OpenCodeGoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	if opencodeGoNeedsReasoningInjection(req.Model) && sessionID != "" {
 		req.Payload = opencodeGoInjectReasoningContentIntoPayload(req.Payload, req.Model, sessionID)
 	}
-
+		// Inject Computer Use function tools for models that need them.
+		// Codex Desktop skips mcp__computer_use__ when routing through /v1/messages,
+		// so DeepSeek models don't see Computer Use capabilities.
+		if opencodeGoNeedsReasoningInjection(req.Model) {
+			req.Payload = opencodeGoInjectComputerUseTools(req.Payload)
+		}
 	var result *cliproxyexecutor.StreamResult
 	var err error
 	if opencodeGoUsesMessages(req.Model) {
