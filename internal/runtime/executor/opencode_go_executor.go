@@ -922,16 +922,21 @@ func opencodeGoStripOrphanedToolCalls(payload []byte) []byte {
 	if !gjson.ValidBytes(payload) {
 		return payload
 	}
+
+	// Determine format: "messages" (Chat Completions) or "input" (Responses API)
+	arrayName := "messages"
 	msgs := gjson.GetBytes(payload, "messages")
 	if !msgs.Exists() || !msgs.IsArray() || len(msgs.Array()) == 0 {
-		return payload
+		msgs = gjson.GetBytes(payload, "input")
+		if !msgs.Exists() || !msgs.IsArray() || len(msgs.Array()) == 0 {
+			return payload
+		}
+		arrayName = "input"
 	}
 
 	items := msgs.Array()
 	needsStrip := make([]int, 0)
 
-	// For each assistant message with tool_calls, check if tool messages
-	// AFTER it resolve ALL the tool_call_ids, respecting message order.
 	for i, item := range items {
 		if item.Get("role").String() != "assistant" {
 			continue
@@ -951,7 +956,6 @@ func opencodeGoStripOrphanedToolCalls(payload []byte) []byte {
 			}
 		}
 
-		// Check if EVERY tool_call in this assistant message has a matching tool response
 		allResolved := true
 		for _, call := range tc.Array() {
 			if id := call.Get("id").String(); id != "" {
@@ -970,9 +974,8 @@ func opencodeGoStripOrphanedToolCalls(payload []byte) []byte {
 		return payload
 	}
 
-	// Strip from last to first to preserve indices
 	for i := len(needsStrip) - 1; i >= 0; i-- {
-		path := fmt.Sprintf("messages.%d.tool_calls", needsStrip[i])
+		path := fmt.Sprintf("%s.%d.tool_calls", arrayName, needsStrip[i])
 		payload, _ = sjson.DeleteBytes(payload, path)
 	}
 	return payload
