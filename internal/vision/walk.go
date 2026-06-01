@@ -152,15 +152,28 @@ func (r *WalkResult) walkContentPart(payload []byte, arrayName string, msgIdx, p
 	r.Parts = append(r.Parts, ip)
 }
 
-// ReplaceImagePart replaces an image content part with a text placeholder.
+// ReplaceImagePart replaces an image content part with a text placeholder,
+// using the array type to determine the correct content type field name.
 func ReplaceImagePart(payload []byte, ip ImagePart, placeholderText string) ([]byte, error) {
+	return ReplaceImagePartEx(payload, ip, placeholderText, ip.ArrayName)
+}
+
+// ReplaceImagePartEx replaces an image content part with a text placeholder.
+// arrayType controls the content type: "messages" → "text", "input" → "input_text".
+func ReplaceImagePartEx(payload []byte, ip ImagePart, placeholderText string, arrayType string) ([]byte, error) {
+	contentType := "text"
+	if arrayType == "input" {
+		contentType = "input_text"
+	}
+	contentField := "text" // Responses API input_text uses "text" as field name
+
 	dataPath := ip.ArrayName + "." + indexStr(ip.MsgIdx) + ".content." + indexStr(ip.PartIdx)
 
-	payload, err := sjson.SetBytes(payload, dataPath+".type", "text")
+	payload, err := sjson.SetBytes(payload, dataPath+".type", contentType)
 	if err != nil {
 		return payload, err
 	}
-	payload, err = sjson.SetBytes(payload, dataPath+".text", placeholderText)
+	payload, err = sjson.SetBytes(payload, dataPath+"."+contentField, placeholderText)
 	if err != nil {
 		return payload, err
 	}
@@ -182,6 +195,19 @@ func ReplaceImagePart(payload []byte, ip ImagePart, placeholderText string) ([]b
 // InjectRegistryNote appends a synthetic text content part to the last user
 // message with image registry information.
 func InjectRegistryNote(payload []byte, note string) ([]byte, error) {
+	arrayType := detectArrayType(payload)
+	return InjectRegistryNoteEx(payload, note, arrayType)
+}
+
+// InjectRegistryNoteEx appends a registry note with the correct content type
+// for the given array type ("messages" → type="text", "input" → type="input_text").
+// The Responses API input_text parts use "text" as the data field name.
+func InjectRegistryNoteEx(payload []byte, note string, arrayType string) ([]byte, error) {
+	contentType := "text"
+	if arrayType == "input" {
+		contentType = "input_text"
+	}
+
 	// Determine format
 	arrayName := "messages"
 	items := gjson.GetBytes(payload, "messages")
@@ -218,8 +244,8 @@ func InjectRegistryNote(payload []byte, note string) ([]byte, error) {
 	if content.Type == gjson.String {
 		existingText := content.String()
 		payload, _ = sjson.SetBytes(payload, contentPath, []any{
-			map[string]any{"type": "text", "text": existingText},
-			map[string]any{"type": "text", "text": note},
+			map[string]any{"type": contentType, "text": existingText},
+			map[string]any{"type": contentType, "text": note},
 		})
 		return payload, nil
 	}
@@ -229,7 +255,7 @@ func InjectRegistryNote(payload []byte, note string) ([]byte, error) {
 	nextIdx := len(parts)
 
 	notePath := contentPath + "." + indexStr(nextIdx)
-	payload, err := sjson.SetBytes(payload, notePath+".type", "text")
+	payload, err := sjson.SetBytes(payload, notePath+".type", contentType)
 	if err != nil {
 		return payload, err
 	}

@@ -139,6 +139,14 @@ func ComputeHash(data string) ImageHash {
 	return ImageHash(fmt.Sprintf("%x", h))
 }
 
+// NextOrdinal returns the next available ordinal and increments the counter.
+func (s *SessionStore) NextOrdinal() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextOrdinal++
+	return s.nextOrdinal
+}
+
 // GetOrCreateEntry finds an existing entry by hash or creates a new one.
 func (s *SessionStore) GetOrCreateEntry(hash ImageHash, ordinal int, maxEntries int) *ImageEntry {
 	s.mu.Lock()

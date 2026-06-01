@@ -4,16 +4,17 @@ import (
 	"context"
 	"time"
 
+	"github.com/tidwall/gjson"
 	log "github.com/sirupsen/logrus"
 )
 
 // ProcessResult contains the outcome of processing a payload through the registry.
 type ProcessResult struct {
-	Payload        []byte       // modified payload with placeholders
-	HasNewImages   bool         // current turn has new images (let fallback handle)
-	ImagesFound    int          // total unique images found
-	HistoricalOnly bool         // only historical images, no new ones
-	RegistryNote   string       // generated registry note (may be empty)
+	Payload        []byte
+	HasNewImages   bool
+	ImagesFound    int
+	HistoricalOnly bool
+	RegistryNote   string
 }
 
 // Processor orchestrates the vision registry workflow for a single request.
@@ -32,35 +33,23 @@ func NewProcessor(analyzer ImageAnalyzer) *Processor {
 	}
 }
 
-// Process handles all image-related concerns for a single request payload.
-// It should be called early in the executor's Execute/ExecuteStream path.
-//
-// The processor:
-//  1. Walks the payload to identify all images (current and historical)
-//  2. For current-turn images: does nothing (existing fallback handles them)
-//  3. For historical images: replaces with short placeholders and may generate
-//     a registry note for the current user message
-//
-// sessionKey may be empty — if so, cross-turn memory is disabled and only
-// single-request processing occurs.
 func (p *Processor) Process(ctx context.Context, payload []byte, sessionKey SessionKey, turnIndex int) (*ProcessResult, error) {
-	result := &ProcessResult{
-		Payload: payload,
-	}
+	result := &ProcessResult{Payload: payload}
 
 	walk := WalkPayload(payload)
 	if len(walk.Parts) == 0 {
 		return result, nil
 	}
-
 	result.ImagesFound = len(walk.Parts)
 
-	// Check if we have a valid session for cross-turn memory
 	hasSession := sessionKey != ""
+	var sessionStore *SessionStore
+	if hasSession {
+		sessionStore = p.registry.GetOrCreateSession(sessionKey)
+	}
 
-	// Separate current-turn images from historical
-	var currentParts []ImagePart
-	var historicalParts []ImagePart
+	// Separate current-turn from historical images
+	var currentParts, historicalParts []ImagePart
 	for _, part := range walk.Parts {
 		if part.IsCurrent {
 			currentParts = append(currentParts, part)
@@ -72,87 +61,81 @@ func (p *Processor) Process(ctx context.Context, payload []byte, sessionKey Sess
 	result.HasNewImages = len(currentParts) > 0
 	result.HistoricalOnly = len(currentParts) == 0 && len(historicalParts) > 0
 
-	// Process current-turn images: record in registry if we have a session,
-	// but don't replace them (let existing fallback handle current images).
-	var sessionStore *SessionStore
-	if hasSession {
-		sessionStore = p.registry.GetOrCreateSession(sessionKey)
-		for _, part := range currentParts {
-			data, _ := ExtractImageData(&part)
-			if data == "" {
-				continue
-			}
-			hash := ComputeHash(data)
-			sessionStore.GetOrCreateEntry(hash, 0, p.maxEntries)
-			ordinal := len(sessionStore.AllEntries())
+	// Record current-turn images in registry (don't replace them)
+	for _, part := range currentParts {
+		data, _ := ExtractImageData(&part)
+		if data == "" {
+			continue
+		}
+		hash := ComputeHash(data)
+		if sessionStore == nil {
+			continue
+		}
+		ordinal := sessionStore.NextOrdinal()
+		sessionStore.GetOrCreateEntry(hash, ordinal, p.maxEntries)
+		sessionStore.UpdateEntry(hash, func(e *ImageEntry) {
+			e.SourceKind = ImageSourceUserUpload
+			e.FirstSeenTurn = turnIndex
+			e.LastSeenTurn = turnIndex
+			e.CurrentPayloadReachable = true
+			e.Availability = ImageAvailableInline
+		})
+	}
 
-			sessionStore.UpdateEntry(hash, func(e *ImageEntry) {
-				if e.StableOrdinal == 0 {
-					e.StableOrdinal = ordinal
-				}
-				e.SourceKind = ImageSourceUserUpload
-				e.FirstSeenTurn = turnIndex
-				e.LastSeenTurn = turnIndex
-				e.CurrentPayloadReachable = true
-				e.Availability = ImageAvailableInline
-				e.Occurrences = append(e.Occurrences, ImageOccurrence{
-					TurnIndex:  turnIndex,
-					MessageIdx: part.MsgIdx,
-					PartIdx:    part.PartIdx,
-				})
-			})
+	// Determine the array type for content type decisions
+	arrayType := detectArrayType(payload) // "messages" → "text", "input" → "input_text"
+
+	// Build a map of hash → image data for re-analysis (extract BEFORE replacement)
+	imageDataByHash := make(map[ImageHash]ImageDataInfo)
+	for _, part := range historicalParts {
+		data, mime := ExtractImageData(&part)
+		if data == "" {
+			continue
+		}
+		hash := ComputeHash(data)
+		imageDataByHash[hash] = ImageDataInfo{Data: data, MIMEType: mime}
+	}
+
+	// Replace historical images with placeholders
+	for _, part := range historicalParts {
+		data, _ := ExtractImageData(&part)
+		if data == "" {
+			continue
+		}
+		hash := ComputeHash(data)
+		entry := p.findOrCreateEntry(sessionStore, hash, data, turnIndex)
+		placeholder := BuildShortPlaceholder(entry)
+
+		var err error
+		result.Payload, err = ReplaceImagePartEx(result.Payload, part, placeholder, arrayType)
+		if err != nil {
+			log.Warnf("vision: replace image part: %v", err)
 		}
 	}
 
-	// Process historical images: replace with placeholders
-	if len(historicalParts) > 0 {
-		for _, part := range historicalParts {
-			data, _ := ExtractImageData(&part)
-			if data == "" {
-				continue
-			}
-			hash := ComputeHash(data)
+	// Detect intent and generate registry note
+	if sessionStore != nil && len(historicalParts) > 0 {
+		lastMsg := extractLastUserText(result.Payload)
+		entries := sessionStore.AllEntries()
+		refNum := ExtractImageReference(lastMsg)
 
-			entry := p.findOrCreateEntry(sessionStore, hash, data, turnIndex)
-			placeholder := BuildShortPlaceholder(entry)
-
-			var err error
-			result.Payload, err = ReplaceImagePart(result.Payload, part, placeholder)
-			if err != nil {
-				log.Warnf("vision: replace image part: %v", err)
+		if refNum > 0 {
+			p.handleReAnalysis(ctx, sessionStore, refNum, lastMsg, imageDataByHash, result)
+		} else {
+			intent := DetectIntent(lastMsg, len(entries))
+			switch intent {
+			case IntentFollowUp:
+				result.RegistryNote = BuildRegistryNote(entries, 0)
+			case IntentAmbiguous:
+				result.RegistryNote = BuildAmbiguityNote(entries)
 			}
 		}
 
-		// Generate registry note for the current user message
-		if sessionStore != nil {
-			entries := sessionStore.AllEntries()
-			if len(entries) > 0 {
-				// Check intent from the last user message
-				lastMsg := extractLastUserText(walk)
-				refNum := ExtractImageReference(lastMsg)
-
-				if refNum > 0 {
-					// User is asking about a specific image — try to re-analyze
-					p.handleReAnalysis(ctx, sessionStore, refNum, lastMsg, result)
-				} else {
-					intent := DetectIntent(lastMsg, len(entries))
-					switch intent {
-					case IntentFollowUp:
-						// User is asking about images generally
-						result.RegistryNote = BuildRegistryNote(entries, 0)
-					case IntentAmbiguous:
-						result.RegistryNote = BuildAmbiguityNote(entries)
-					}
-				}
-
-				// Inject the registry note
-				if result.RegistryNote != "" {
-					var err error
-					result.Payload, err = InjectRegistryNote(result.Payload, result.RegistryNote)
-					if err != nil {
-						log.Warnf("vision: inject registry note: %v", err)
-					}
-				}
+		if result.RegistryNote != "" {
+			var err error
+			result.Payload, err = InjectRegistryNoteEx(result.Payload, result.RegistryNote, arrayType)
+			if err != nil {
+				log.Warnf("vision: inject registry note: %v", err)
 			}
 		}
 	}
@@ -160,37 +143,36 @@ func (p *Processor) Process(ctx context.Context, payload []byte, sessionKey Sess
 	return result, nil
 }
 
+// ImageDataInfo holds the raw image data and MIME type for re-analysis.
+type ImageDataInfo struct {
+	Data     string
+	MIMEType string
+}
+
 func (p *Processor) findOrCreateEntry(sessionStore *SessionStore, hash ImageHash, data string, turnIndex int) *ImageEntry {
 	if sessionStore == nil {
-		// No session — create ephemeral entry for this request only
 		return &ImageEntry{
-			Hash:        hash,
-			StableOrdinal: 0,
-			Summary: ImageSummary{Confidence: "low"},
+			Hash:          hash,
+			StableOrdinal: 1,
+			Summary:       ImageSummary{Confidence: "low"},
 		}
 	}
-
-	entry := sessionStore.GetOrCreateEntry(hash, 0, p.maxEntries)
-	if entry.StableOrdinal == 0 {
-		all := sessionStore.AllEntries()
-		entry.StableOrdinal = len(all)
+	existing := sessionStore.GetEntry(hash)
+	if existing != nil {
+		sessionStore.UpdateEntry(hash, func(e *ImageEntry) {
+			e.LastSeenTurn = turnIndex
+			e.LastAccessAt = time.Now()
+		})
+		return existing
 	}
 
-	sessionStore.UpdateEntry(hash, func(e *ImageEntry) {
-		e.LastSeenTurn = turnIndex
-		e.LastAccessAt = time.Now()
-		e.Occurrences = append(e.Occurrences, ImageOccurrence{
-			TurnIndex: turnIndex,
-		})
-	})
-
+	ordinal := sessionStore.NextOrdinal()
+	entry := sessionStore.GetOrCreateEntry(hash, ordinal, p.maxEntries)
 	return entry
 }
 
-func (p *Processor) handleReAnalysis(ctx context.Context, sessionStore *SessionStore, targetOrdinal int, query string, result *ProcessResult) {
+func (p *Processor) handleReAnalysis(ctx context.Context, sessionStore *SessionStore, targetOrdinal int, query string, imageDataByHash map[ImageHash]ImageDataInfo, result *ProcessResult) {
 	entries := sessionStore.AllEntries()
-
-	// Find the target entry
 	var target *ImageEntry
 	for _, e := range entries {
 		if e.StableOrdinal == targetOrdinal {
@@ -202,41 +184,21 @@ func (p *Processor) handleReAnalysis(ctx context.Context, sessionStore *SessionS
 		return
 	}
 
-	if !target.CurrentPayloadReachable {
-		// Can't re-analyze, use cached summary
+	imgInfo, hasData := imageDataByHash[target.Hash]
+	if !hasData || imgInfo.Data == "" {
 		result.RegistryNote = BuildRegistryNote([]*ImageEntry{target}, targetOrdinal)
 		return
 	}
 
-	// Re-analyze with the new question
 	req := AnalyzeRequest{
 		Existing:   target.Summary,
 		Query:      query,
 		IsFollowUp: target.Summary.Summary != "",
 		SourceKind: target.SourceKind,
+		ImageData:  imgInfo.Data,
+		MIMEType:   imgInfo.MIMEType,
 	}
 
-	// Try to find the raw data in the current payload
-	// (already processed — we need to extract from the walk result)
-	walk := WalkPayload(result.Payload)
-	for _, part := range walk.Parts {
-		if !part.IsCurrent {
-			data, mime := ExtractImageData(&part)
-			if data != "" {
-				req.ImageData = data
-				req.MIMEType = mime
-				break
-			}
-		}
-	}
-
-	if req.ImageData == "" {
-		// Raw data not available
-		result.RegistryNote = BuildRegistryNote([]*ImageEntry{target}, targetOrdinal)
-		return
-	}
-
-	// Call the analyzer
 	resp, err := p.analyzer.Analyze(ctx, req)
 	if err != nil {
 		log.Warnf("vision: re-analysis failed for Image #%d: %v", targetOrdinal, err)
@@ -244,31 +206,87 @@ func (p *Processor) handleReAnalysis(ctx context.Context, sessionStore *SessionS
 		return
 	}
 
-	// Update the entry with new details
+	// Merge all summary fields, not just Summary
 	sessionStore.UpdateEntry(target.Hash, func(e *ImageEntry) {
-		e.Summary = resp.Summary
+		merged := resp.Summary
+		merged.Summary = mergeSummaries(e.Summary.Summary, resp.Summary.Summary)
+		merged.OCRHints = mergeHints(e.Summary.OCRHints, resp.Summary.OCRHints, 5)
+		merged.LayoutHints = mergeHints(e.Summary.LayoutHints, resp.Summary.LayoutHints, 5)
+		merged.DetailHints = mergeHints(e.Summary.DetailHints, resp.Summary.DetailHints, 8)
+		merged.Confidence = "high"
+		e.Summary = merged
 		e.LastAnalyzedAt = time.Now()
 	})
 
-	// Build the registry note with the updated summary
-	result.RegistryNote = BuildRegistryNote([]*ImageEntry{target}, targetOrdinal)
+	updated := sessionStore.GetEntry(target.Hash)
+	if updated != nil {
+		result.RegistryNote = BuildRegistryNote([]*ImageEntry{updated}, targetOrdinal)
+	}
 }
 
-// extractLastUserText finds the text content of the last user message.
-func extractLastUserText(walk *WalkResult) string {
-	for i := len(walk.Parts) - 1; i >= 0; i-- {
-		if walk.Parts[i].IsCurrent {
-			// The current parts list doesn't contain text — we need to walk the
-			// original payload. But for intent detection, we just return empty
-			// and let the caller use the raw last message text.
-			return ""
+// extractLastUserText finds the text content of the last user message from the payload.
+func extractLastUserText(payload []byte) string {
+	items := gjson.GetBytes(payload, "messages")
+	if !items.Exists() || !items.IsArray() {
+		items = gjson.GetBytes(payload, "input")
+	}
+	if !items.Exists() || !items.IsArray() {
+		return ""
+	}
+
+	// Find last user message
+	lastUserIdx := -1
+	arr := items.Array()
+	for i := len(arr) - 1; i >= 0; i-- {
+		if arr[i].Get("role").String() == "user" {
+			lastUserIdx = i
+			break
 		}
 	}
+	if lastUserIdx < 0 {
+		return ""
+	}
+
+	content := arr[lastUserIdx].Get("content")
+	if !content.Exists() {
+		return ""
+	}
+
+	if content.Type == gjson.String {
+		return content.String()
+	}
+
+	if content.IsArray() {
+		var parts []string
+		for _, part := range content.Array() {
+			text := part.Get("text").String()
+			if text == "" {
+				text = part.Get("input_text").String()
+			}
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+		if len(parts) > 0 {
+			return parts[len(parts)-1] // last text part (most recent)
+		}
+	}
+
 	return ""
 }
 
-// CurrentTurnHasImages is a helper for executors to quickly check if the
-// current user message contains images (for fallback decisions).
+// detectArrayType determines whether the payload uses "messages" or "input".
+func detectArrayType(payload []byte) string {
+	if gjson.GetBytes(payload, "messages").Exists() {
+		return "messages"
+	}
+	if gjson.GetBytes(payload, "input").Exists() {
+		return "input"
+	}
+	return "messages"
+}
+
+// CurrentTurnHasImages is a helper for executors.
 func CurrentTurnHasImages(payload []byte) bool {
 	walk := WalkPayload(payload)
 	for _, p := range walk.Parts {
@@ -277,4 +295,33 @@ func CurrentTurnHasImages(payload []byte) bool {
 		}
 	}
 	return false
+}
+
+func mergeSummaries(existing, newSummary string) string {
+	if existing == "" {
+		return newSummary
+	}
+	return existing + " | " + newSummary
+}
+
+func mergeHints(existing, newHints []string, max int) []string {
+	seen := make(map[string]bool, len(existing)+len(newHints))
+	merged := make([]string, 0, max)
+	for _, h := range existing {
+		if len(merged) >= max {
+			break
+		}
+		seen[h] = true
+		merged = append(merged, h)
+	}
+	for _, h := range newHints {
+		if len(merged) >= max {
+			break
+		}
+		if !seen[h] {
+			seen[h] = true
+			merged = append(merged, h)
+		}
+	}
+	return merged
 }
