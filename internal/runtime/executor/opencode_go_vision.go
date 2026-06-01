@@ -251,7 +251,7 @@ func opencodeGoPreprocessVision(ctx context.Context, cfg *config.Config, auth *c
 	messages := gjson.GetBytes(payload, "messages")
 	if messages.Exists() && messages.IsArray() {
 		items := messages.Array()
-		for i := len(items) - 1; i >= 0; i-- {
+		for i := len(items) - 2; i >= 0; i-- {
 			item := items[i]
 			if item.Get("role").String() != "user" {
 				continue
@@ -267,7 +267,7 @@ func opencodeGoPreprocessVision(ctx context.Context, cfg *config.Config, auth *c
 	input := gjson.GetBytes(payload, "input")
 	if input.Exists() && input.IsArray() {
 		items := input.Array()
-		for i := len(items) - 1; i >= 0; i-- {
+		for i := len(items) - 2; i >= 0; i-- {
 			item := items[i]
 			if item.Get("role").String() != "user" {
 				continue

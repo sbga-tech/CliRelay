@@ -89,7 +89,7 @@ func (e *OpenCodeGoExecutor) Execute(ctx context.Context, auth *cliproxyauth.Aut
 	if visionModel == "" {
 		visionModel = "qwen3.5-plus"
 	}
-	if !opencodeGoSupportsNativeVision(baseModel) && opencodeGoHasCurrentImage(req.Payload) && apiKey != ""  {
+	if !opencodeGoSupportsNativeVision(baseModel) && opencodeGoPayloadHasImage(req.Payload) && apiKey != ""  {
 		if preprocessed, ok := opencodeGoPreprocessVision(ctx, e.cfg, auth, apiKey, visionModel, req.Payload); ok {
 			req.Payload = preprocessed
 		}
@@ -153,7 +153,7 @@ func (e *OpenCodeGoExecutor) ExecuteStream(ctx context.Context, auth *cliproxyau
 	if visionModel == "" {
 		visionModel = "qwen3.5-plus"
 	}
-	if !opencodeGoSupportsNativeVision(baseModel) && opencodeGoHasCurrentImage(req.Payload) && apiKey != ""  {
+	if !opencodeGoSupportsNativeVision(baseModel) && opencodeGoPayloadHasImage(req.Payload) && apiKey != ""  {
 		if preprocessed, ok := opencodeGoPreprocessVision(ctx, e.cfg, auth, apiKey, visionModel, req.Payload); ok {
 			req.Payload = preprocessed
 		}
