@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -682,6 +683,33 @@ func openRouterCanonicalGroupID(remoteModelID string) string {
 	return openRouterStripDateSuffix(providerless)
 }
 
+func openRouterStaticBaseModelRow(modelID string) (ModelConfigRow, bool) {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return ModelConfigRow{}, false
+	}
+	info := registry.LookupStaticModelInfo(modelID)
+	if info == nil {
+		return ModelConfigRow{}, false
+	}
+	ownedBy := normalizeModelOwnerValue(info.OwnedBy)
+	if ownedBy == "" {
+		ownedBy = normalizeModelOwnerValue(info.Type)
+	}
+	description := strings.TrimSpace(info.Description)
+	if description == "" {
+		description = strings.TrimSpace(info.DisplayName)
+	}
+	return ModelConfigRow{
+		ModelID:     modelID,
+		OwnedBy:     ownedBy,
+		Description: description,
+		Enabled:     true,
+		PricingMode: "token",
+		Source:      "seed",
+	}, true
+}
+
 // openRouterMergeVariantGroups performs a second pass after the main sync loop.
 // It groups all remote models by their date-stripped base ID and updates existing
 // base model config rows with the highest prices and best metadata found across
@@ -714,7 +742,11 @@ func openRouterMergeVariantGroups(models []OpenRouterRemoteModel) error {
 	for baseID, entries := range groups {
 		baseModel, exists := GetModelConfig(baseID)
 		if !exists {
-			continue
+			var ok bool
+			baseModel, ok = openRouterStaticBaseModelRow(baseID)
+			if !ok {
+				continue
+			}
 		}
 		// Aggregate: highest prices, best description, most complete modalities.
 		bestInputPrice := baseModel.InputPricePerMillion

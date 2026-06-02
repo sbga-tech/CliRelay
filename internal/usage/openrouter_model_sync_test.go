@@ -564,6 +564,68 @@ func TestSyncOpenRouterModelsQwen8DigitDateSuffixUpdatesBaseModel(t *testing.T) 
 	}
 }
 
+func TestSyncOpenRouterModelsCreatesKnownStaticBaseModelWhenMissing(t *testing.T) {
+	initModelConfigTestDB(t)
+
+	if _, ok := GetModelConfig("qwen3.5-plus"); !ok {
+		t.Fatal("expected qwen3.5-plus to be seeded before missing-base simulation")
+	}
+	if err := DeleteModelConfig("qwen3.5-plus"); err != nil {
+		t.Fatalf("DeleteModelConfig(qwen3.5-plus) error = %v", err)
+	}
+	if _, ok := GetModelConfig("qwen3.5-plus"); ok {
+		t.Fatal("expected qwen3.5-plus to be absent before OpenRouter sync")
+	}
+
+	result, err := SyncOpenRouterModelList(context.Background(), []OpenRouterRemoteModel{
+		{
+			ID:          "qwen/qwen3.5-plus-20260420",
+			Name:        "Qwen 3.5 Plus (2026-04-20)",
+			Description: "Qwen 3.5 Plus OpenRouter variant",
+			Architecture: OpenRouterRemoteArchitecture{
+				Modality: "text+image->text",
+			},
+			Pricing: OpenRouterRemotePricing{
+				Prompt:         "0.0000003",
+				Completion:     "0.0000018",
+				InputCacheRead: "0",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SyncOpenRouterModelList() error = %v", err)
+	}
+	if result.Seen != 1 || result.Added != 1 || result.Skipped != 0 {
+		t.Fatalf("unexpected sync result: %+v", result)
+	}
+
+	variant, ok := GetModelConfig("qwen3.5-plus-20260420")
+	if !ok {
+		t.Fatal("expected qwen3.5-plus-20260420 variant row to exist")
+	}
+	if variant.InputPricePerMillion != 0.3 || variant.OutputPricePerMillion != 1.8 {
+		t.Fatalf("unexpected variant pricing: %+v", variant)
+	}
+
+	base, ok := GetModelConfig("qwen3.5-plus")
+	if !ok {
+		t.Fatal("expected qwen3.5-plus base row to be recreated from static model metadata")
+	}
+	if base.Source != "seed" || base.OwnedBy != "opencode" {
+		t.Fatalf("expected recreated base to keep static seed metadata, got %+v", base)
+	}
+	if base.InputPricePerMillion != 0.3 || base.OutputPricePerMillion != 1.8 {
+		t.Fatalf("expected recreated base pricing from variant, got %+v", base)
+	}
+	if strings.Join(base.InputModalities, ",") != "text,image" || strings.Join(base.OutputModalities, ",") != "text" {
+		t.Fatalf("expected recreated base modalities from variant, got input=%v output=%v",
+			base.InputModalities, base.OutputModalities)
+	}
+	if cost := CalculateCost("qwen3.5-plus", 1_000_000, 1_000_000, 0); cost != 2.1 {
+		t.Fatalf("expected CalculateCost(recreated base) = 2.1, got %v", cost)
+	}
+}
+
 func TestSyncOpenRouterModelsQwenSegmentedDateSuffixUpdatesBaseModel(t *testing.T) {
 	initModelConfigTestDB(t)
 	seedBaseModelForTest(t, "qwen3.5-plus", "qwen")
@@ -749,8 +811,9 @@ func TestSyncOpenRouterModelsExactBaseMatchBeforeVariant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncOpenRouterModelList() error = %v", err)
 	}
-	// First model: exact match → modelID="qwen3.5-plus" (no strip) → added=1
-	if result.Seen != 2 || result.Added != 2 {
+	// qwen3.5-plus is a seeded OpenCode Go model, so the exact match updates
+	// the base row and the dated variant is added as a separate OpenRouter row.
+	if result.Seen != 2 || result.Added != 1 || result.Updated != 1 {
 		t.Fatalf("unexpected sync result: %+v", result)
 	}
 
@@ -813,7 +876,6 @@ func TestSyncOpenRouterModelsUserDescriptionNotOverwrittenByVariantMerge(t *test
 		t.Fatalf("user source should be preserved, got %q", model.Source)
 	}
 }
-
 
 func TestSyncOpenRouterModelsAnthropicDottedExactFirstThenDatedVariant(t *testing.T) {
 	initModelConfigTestDB(t)
