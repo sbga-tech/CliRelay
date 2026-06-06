@@ -760,20 +760,7 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		return
 	}
 
-	var req struct {
-		Name                  string    `json:"name"`
-		Label                 *string   `json:"label"`
-		CustomTags            *[]string `json:"custom_tags"`
-		HiddenDefaultTags     *[]string `json:"hidden_default_tags"`
-		DisplayTags           *[]string `json:"display_tags"`
-		Prefix                *string   `json:"prefix"`
-		ProxyURL              *string   `json:"proxy_url"`
-		ProxyID               *string   `json:"proxy_id"`
-		Priority              *int      `json:"priority"`
-		SubscriptionStartedAt *string   `json:"subscription_started_at"`
-		SubscriptionPeriod    *string   `json:"subscription_period"`
-		SubscriptionExpiresAt *string   `json:"subscription_expires_at"`
-	}
+	var req managementauthfiles.FieldPatch
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
@@ -806,190 +793,13 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 		return
 	}
 
-	changed := false
-	var oldChannelIdentifiers []string
-	var newChannelLabel string
-	if req.Label != nil {
-		accountType, _ := targetAuth.AccountInfo()
-		if !strings.EqualFold(accountType, "oauth") {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "label is only supported for oauth auth files"})
-			return
-		}
-		if managementauthfiles.IsRuntimeOnly(targetAuth) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "runtime-only auth files cannot rename channel"})
-			return
-		}
-		label, errValidate := h.validateAuthChannelName(*req.Label, targetAuth.ID)
-		if errValidate != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": errValidate.Error()})
-			return
-		}
-		oldChannelIdentifiers = targetAuth.ChannelIdentifiers()
-		newChannelLabel = label
-		targetAuth.Label = label
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		targetAuth.Metadata["label"] = label
-		changed = true
-	}
-	if req.Prefix != nil {
-		targetAuth.Prefix = strings.TrimSpace(*req.Prefix)
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		if targetAuth.Prefix == "" {
-			delete(targetAuth.Metadata, "prefix")
-		} else {
-			targetAuth.Metadata["prefix"] = targetAuth.Prefix
-		}
-		changed = true
-	}
-	if req.CustomTags != nil {
-		tags, errNormalize := managementauthfiles.NormalizeEditableTags(*req.CustomTags, managementauthfiles.MaxCustomTags)
-		if errNormalize != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": errNormalize.Error()})
-			return
-		}
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		if len(tags) == 0 {
-			delete(targetAuth.Metadata, "custom_tags")
-		} else {
-			targetAuth.Metadata["custom_tags"] = tags
-		}
-		changed = true
-	}
-	if req.HiddenDefaultTags != nil {
-		tags := managementauthfiles.NormalizeTagList(*req.HiddenDefaultTags)
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		if len(tags) == 0 {
-			delete(targetAuth.Metadata, "hidden_default_tags")
-		} else {
-			targetAuth.Metadata["hidden_default_tags"] = tags
-		}
-		changed = true
-	}
-	if req.DisplayTags != nil {
-		tags := managementauthfiles.NormalizeTagList(*req.DisplayTags)
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		targetAuth.Metadata["display_tags"] = tags
-		changed = true
-	}
-	if req.ProxyURL != nil {
-		targetAuth.ProxyURL = strings.TrimSpace(*req.ProxyURL)
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		if targetAuth.ProxyURL == "" {
-			delete(targetAuth.Metadata, "proxy_url")
-			delete(targetAuth.Metadata, "proxy-url")
-			delete(targetAuth.Metadata, "proxyUrl")
-		} else {
-			targetAuth.Metadata["proxy_url"] = targetAuth.ProxyURL
-		}
-		changed = true
-	}
-	if req.ProxyID != nil {
-		targetAuth.ProxyID = strings.TrimSpace(*req.ProxyID)
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		if targetAuth.ProxyID == "" {
-			delete(targetAuth.Metadata, "proxy_id")
-		} else {
-			targetAuth.Metadata["proxy_id"] = targetAuth.ProxyID
-		}
-		changed = true
-	}
-	if req.Priority != nil {
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		if *req.Priority == 0 {
-			delete(targetAuth.Metadata, "priority")
-		} else {
-			targetAuth.Metadata["priority"] = *req.Priority
-		}
-		changed = true
-	}
-	if req.SubscriptionStartedAt != nil {
-		value := strings.TrimSpace(*req.SubscriptionStartedAt)
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		if value == "" {
-			managementauthfiles.ClearSubscriptionMetadata(targetAuth.Metadata)
-		} else {
-			ts, ok := managementauthfiles.ParseSubscriptionTimestampValue(value)
-			if !ok || ts.IsZero() {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "subscription_started_at must be a valid time"})
-				return
-			}
-			managementauthfiles.DeleteSubscriptionStartMetadata(targetAuth.Metadata)
-			managementauthfiles.DeleteSubscriptionExpirationMetadata(targetAuth.Metadata)
-			targetAuth.Metadata["subscription_started_at"] = ts.UTC().Format(time.RFC3339)
-			if req.SubscriptionPeriod == nil {
-				if period, okPeriod := managementauthfiles.ExtractSubscriptionPeriod(targetAuth.Metadata); okPeriod {
-					targetAuth.Metadata["subscription_period"] = period
-					delete(targetAuth.Metadata, "subscriptionPeriod")
-				} else {
-					targetAuth.Metadata["subscription_period"] = "monthly"
-				}
-			}
-		}
-		changed = true
-	}
-	if req.SubscriptionPeriod != nil {
-		value := strings.TrimSpace(*req.SubscriptionPeriod)
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		if value == "" {
-			managementauthfiles.DeleteSubscriptionPeriodMetadata(targetAuth.Metadata)
-		} else {
-			period, ok := managementauthfiles.NormalizeSubscriptionPeriodValue(value)
-			if !ok {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "subscription_period must be monthly or yearly"})
-				return
-			}
-			managementauthfiles.DeleteSubscriptionPeriodMetadata(targetAuth.Metadata)
-			targetAuth.Metadata["subscription_period"] = period
-		}
-		changed = true
-	}
-	if req.SubscriptionExpiresAt != nil {
-		value := strings.TrimSpace(*req.SubscriptionExpiresAt)
-		if targetAuth.Metadata == nil {
-			targetAuth.Metadata = make(map[string]any)
-		}
-		if value == "" {
-			managementauthfiles.ClearSubscriptionMetadata(targetAuth.Metadata)
-		} else {
-			ts, ok := managementauthfiles.ParseSubscriptionTimestampValue(value)
-			if !ok || ts.IsZero() {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "subscription_expires_at must be a valid time"})
-				return
-			}
-			managementauthfiles.DeleteSubscriptionStartMetadata(targetAuth.Metadata)
-			managementauthfiles.DeleteSubscriptionPeriodMetadata(targetAuth.Metadata)
-			managementauthfiles.DeleteSubscriptionExpirationMetadata(targetAuth.Metadata)
-			targetAuth.Metadata["subscription_expires_at"] = ts.UTC().Format(time.RFC3339)
-		}
-		changed = true
-	}
-
-	if !changed {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "no fields to update"})
+	patchResult, errPatch := managementauthfiles.ApplyFieldPatch(targetAuth, req, managementauthfiles.FieldPatchOptions{
+		ValidateLabel: h.validateAuthChannelName,
+	})
+	if errPatch != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errPatch.Error()})
 		return
 	}
-
-	targetAuth.UpdatedAt = time.Now()
 
 	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
@@ -1001,8 +811,8 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 			return
 		}
 	}
-	if len(oldChannelIdentifiers) > 0 {
-		if err := h.renameChannelReferences(oldChannelIdentifiers, newChannelLabel); err != nil {
+	if len(patchResult.OldChannelIdentifiers) > 0 {
+		if err := h.renameChannelReferences(patchResult.OldChannelIdentifiers, patchResult.NewChannelLabel); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
