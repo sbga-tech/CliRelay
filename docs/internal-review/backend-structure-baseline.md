@@ -18,16 +18,16 @@ docs/internal-review/backend-structure-allowlist.json
 
 ## 当前结构指标
 
-基于 2026-06-06 Phase 1 Amp settings service 拆分后的基线：
+基于 2026-06-06 Phase 1 OAuth settings service 拆分后的基线：
 
 | 指标 | 数量 |
 | --- | ---: |
-| Go 文件总数 | 667 |
-| 生产 Go 文件 | 451 |
-| 测试 Go 文件 | 216 |
-| `internal/` Go 文件 | 544 |
-| `internal/` 生产 Go 文件 | 380 |
-| `internal/` 测试 Go 文件 | 164 |
+| Go 文件总数 | 669 |
+| 生产 Go 文件 | 452 |
+| 测试 Go 文件 | 217 |
+| `internal/` Go 文件 | 546 |
+| `internal/` 生产 Go 文件 | 381 |
+| `internal/` 测试 Go 文件 | 165 |
 | 生产 Go 文件中 `>800` 行 | 25 |
 | 生产 Go 文件中 `>1200` 行 | 13 |
 | `internal/` 生产 Go 文件中 `>800` 行 | 22 |
@@ -35,8 +35,8 @@ docs/internal-review/backend-structure-allowlist.json
 | 生产 `sdk/**` 中直接导入 `internal/**` 的文件 | 40 |
 | 管理端 `Handler` receiver 方法 | 245 |
 | `server.go` 内管理路由注册 | 0 |
-| `internal/` 生产目录 | 92 |
-| `internal/` 有同级测试目录 | 47 |
+| `internal/` 生产目录 | 93 |
+| `internal/` 有同级测试目录 | 48 |
 | `internal/` 无同级测试目录 | 45 |
 
 ## 当前 `>1200` 行生产文件
@@ -49,7 +49,7 @@ docs/internal-review/backend-structure-allowlist.json
 | `internal/usage/usage_db.go` | 2530 | Phase 3 |
 | `internal/runtime/executor/codex_image_executor.go` | 2233 | Phase 4 |
 | `internal/config/config.go` | 2216 | Phase 2 |
-| `internal/api/handlers/management/config_lists.go` | 2184 | Phase 1/2 |
+| `internal/api/handlers/management/config_lists.go` | 2119 | Phase 1/2 |
 | `internal/api/server.go` | 1851 | Phase 6 |
 | `sdk/cliproxy/service.go` | 1788 | Phase 6/7 |
 | `internal/runtime/executor/antigravity_executor.go` | 1766 | Phase 4 |
