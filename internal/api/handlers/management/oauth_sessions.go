@@ -61,3 +61,7 @@ func WriteOAuthCallbackFile(authDir, provider, state, code, errorMessage string)
 func WriteOAuthCallbackFileForPendingSession(authDir, provider, state, code, errorMessage string) (string, error) {
 	return oauthSessions.WriteCallbackFileForPending(authDir, provider, state, code, errorMessage)
 }
+
+func WaitOAuthCallbackFile(authDir, provider, state string, timeout time.Duration) (map[string]string, error) {
+	return oauthSessions.WaitCallbackFile(authDir, provider, state, timeout, 500*time.Millisecond)
+}

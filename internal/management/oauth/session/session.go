@@ -21,6 +21,7 @@ var (
 	ErrInvalidState    = errors.New("invalid oauth state")
 	ErrUnsupportedFlow = errors.New("unsupported oauth provider")
 	ErrNotPending      = errors.New("oauth session is not pending")
+	ErrCallbackTimeout = errors.New("timeout waiting for oauth callback")
 )
 
 type Session struct {
@@ -284,4 +285,39 @@ func (s *Store) WriteCallbackFileForPending(authDir, provider, state, code, erro
 		return "", ErrNotPending
 	}
 	return WriteCallbackFile(authDir, canonicalProvider, state, code, errorMessage)
+}
+
+func (s *Store) WaitCallbackFile(authDir, provider, state string, timeout, pollInterval time.Duration) (map[string]string, error) {
+	canonicalProvider, err := NormalizeProvider(provider)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateState(state); err != nil {
+		return nil, err
+	}
+	if timeout <= 0 {
+		timeout = DefaultTTL
+	}
+	if pollInterval <= 0 {
+		pollInterval = 500 * time.Millisecond
+	}
+
+	fileName := fmt.Sprintf(".oauth-%s-%s.oauth", canonicalProvider, state)
+	filePath := filepath.Join(authDir, fileName)
+	deadline := time.Now().Add(timeout)
+	for {
+		if !s.IsPending(state, canonicalProvider) {
+			return nil, ErrNotPending
+		}
+		if time.Now().After(deadline) {
+			return nil, ErrCallbackTimeout
+		}
+		if data, errRead := os.ReadFile(filePath); errRead == nil {
+			var payload map[string]string
+			_ = json.Unmarshal(data, &payload)
+			_ = os.Remove(filePath)
+			return payload, nil
+		}
+		time.Sleep(pollInterval)
+	}
 }
