@@ -13,22 +13,6 @@ func normalizeChannelName(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func authChannelLabelFromMetadata(metadata map[string]any, provider string) string {
-	if metadata != nil {
-		if raw, ok := metadata["label"].(string); ok {
-			if label := strings.TrimSpace(raw); label != "" {
-				return label
-			}
-		}
-		if raw, ok := metadata["email"].(string); ok {
-			if email := strings.TrimSpace(raw); email != "" {
-				return email
-			}
-		}
-	}
-	return strings.TrimSpace(provider)
-}
-
 type knownChannel struct {
 	Canonical string
 	Source    string

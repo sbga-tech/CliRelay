@@ -589,44 +589,31 @@ func (h *Handler) registerAuthFromFile(ctx context.Context, path string, data []
 			return fmt.Errorf("failed to write normalized auth file: %w", errWrite)
 		}
 	}
-	label := authChannelLabelFromMetadata(metadata, provider)
-	lastRefresh, hasLastRefresh := managementauthfiles.ExtractLastRefreshTimestamp(metadata)
-
 	authID := h.authIDForPath(path)
 	if authID == "" {
 		authID = path
 	}
-	attr := map[string]string{
-		"path":   path,
-		"source": path,
-	}
-	auth := &coreauth.Auth{
-		ID:         authID,
-		Provider:   provider,
-		Prefix:     managementauthfiles.MetadataString(metadata, "prefix"),
-		ProxyURL:   managementauthfiles.MetadataString(metadata, "proxy_url", "proxy-url", "proxyUrl"),
-		ProxyID:    managementauthfiles.MetadataString(metadata, "proxy_id", "proxy-id", "proxyId"),
-		FileName:   filepath.Base(path),
-		Label:      label,
-		Status:     coreauth.StatusActive,
-		Attributes: attr,
-		Metadata:   metadata,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
-	}
-	if hasLastRefresh {
-		auth.LastRefreshedAt = lastRefresh
+	authDir := ""
+	if h.cfg != nil {
+		authDir = h.cfg.AuthDir
 	}
 	if existing, ok := h.authManager.GetByID(authID); ok {
-		auth.CreatedAt = existing.CreatedAt
-		if !hasLastRefresh {
-			auth.LastRefreshedAt = existing.LastRefreshedAt
-		}
-		auth.NextRefreshAfter = existing.NextRefreshAfter
-		auth.Runtime = existing.Runtime
+		auth := managementauthfiles.BuildRecord(managementauthfiles.RecordOptions{
+			AuthDir:  authDir,
+			Path:     path,
+			Provider: provider,
+			Metadata: metadata,
+			Existing: existing,
+		})
 		_, err := h.authManager.Update(ctx, auth)
 		return err
 	}
+	auth := managementauthfiles.BuildRecord(managementauthfiles.RecordOptions{
+		AuthDir:  authDir,
+		Path:     path,
+		Provider: provider,
+		Metadata: metadata,
+	})
 	_, err := h.authManager.Register(ctx, auth)
 	return err
 }
