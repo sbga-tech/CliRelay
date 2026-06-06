@@ -1,10 +1,26 @@
 package claude
 
 import (
+	"fmt"
 	"strings"
 
 	internalclaude "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/claude"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
+
+func RecordFromTokenStorage(tokenStorage *internalclaude.ClaudeTokenStorage) *coreauth.Auth {
+	if tokenStorage == nil {
+		return nil
+	}
+	fileName := CredentialFileName(tokenStorage.Email)
+	return &coreauth.Auth{
+		ID:       fileName,
+		Provider: "claude",
+		FileName: fileName,
+		Storage:  tokenStorage,
+		Metadata: MetadataFromTokenStorage(tokenStorage),
+	}
+}
 
 func MetadataFromTokenStorage(tokenStorage *internalclaude.ClaudeTokenStorage) map[string]any {
 	metadata := map[string]any{
@@ -29,4 +45,8 @@ func MetadataFromTokenStorage(tokenStorage *internalclaude.ClaudeTokenStorage) m
 		metadata["last_refresh"] = lastRefresh
 	}
 	return metadata
+}
+
+func CredentialFileName(email string) string {
+	return fmt.Sprintf("claude-%s.json", email)
 }
