@@ -27,6 +27,7 @@ type authFileTrendResponse struct {
 	Hours             int                         `json:"hours"`
 	RequestTotal      int64                       `json:"request_total"`
 	CycleRequestTotal int64                       `json:"cycle_request_total"`
+	CycleCostTotal    float64                     `json:"cycle_cost_total"`
 	CycleStart        string                      `json:"cycle_start"`
 	DailyUsage        []usage.DailyCountPoint     `json:"daily_usage"`
 	HourlyUsage       []usage.HourlyCountPoint    `json:"hourly_usage"`
@@ -948,6 +949,11 @@ func (h *Handler) GetAuthFileTrend(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	cycleCostTotal, err := usage.QueryCostByAuthIndexSince(authIndex, cycleStart)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
 
 	c.JSON(http.StatusOK, authFileTrendResponse{
 		AuthIndex:         authIndex,
@@ -955,6 +961,7 @@ func (h *Handler) GetAuthFileTrend(c *gin.Context) {
 		Hours:             hours,
 		RequestTotal:      requestTotal,
 		CycleRequestTotal: cycleRequestTotal,
+		CycleCostTotal:    cycleCostTotal,
 		CycleStart:        cycleStart.UTC().Format(time.RFC3339),
 		DailyUsage:        daily,
 		HourlyUsage:       hourly,

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -655,9 +656,24 @@ func TestGetAuthFileTrendUsesWeeklyResetCycleForRequestTotal(t *testing.T) {
 	resetAt := now.Add(4 * 24 * time.Hour)
 	cycleStart := resetAt.Add(-7 * 24 * time.Hour)
 
-	usage.InsertLog("", "", "gpt-5.4", "codex", "GptPro2", auth.Index, false, cycleStart.Add(-time.Hour), 1, 1, usage.TokenStats{TotalTokens: 1}, "", "")
-	usage.InsertLog("", "", "gpt-5.4", "codex", "GptPro2", auth.Index, false, cycleStart.Add(time.Hour), 1, 1, usage.TokenStats{TotalTokens: 1}, "", "")
-	usage.InsertLog("", "", "gpt-5.4", "codex", "GptPro2", auth.Index, false, now.Add(-time.Hour), 1, 1, usage.TokenStats{TotalTokens: 1}, "", "")
+	if err := usage.UpsertModelPricing("gpt-5.4", 1, 2, 0); err != nil {
+		t.Fatalf("UpsertModelPricing: %v", err)
+	}
+	usage.InsertLog("", "", "gpt-5.4", "codex", "GptPro2", auth.Index, false, cycleStart.Add(-time.Hour), 1, 1, usage.TokenStats{
+		InputTokens:  1000,
+		OutputTokens: 2000,
+		TotalTokens:  3000,
+	}, "", "")
+	usage.InsertLog("", "", "gpt-5.4", "codex", "GptPro2", auth.Index, false, cycleStart.Add(time.Hour), 1, 1, usage.TokenStats{
+		InputTokens:  1000,
+		OutputTokens: 2000,
+		TotalTokens:  3000,
+	}, "", "")
+	usage.InsertLog("", "", "gpt-5.4", "codex", "GptPro2", auth.Index, false, now.Add(-time.Hour), 1, 1, usage.TokenStats{
+		InputTokens:  1000,
+		OutputTokens: 1000,
+		TotalTokens:  2000,
+	}, "", "")
 
 	weeklyRemaining := 93.0
 	if err := usage.RecordQuotaSnapshotPoints(auth.Index, "codex", []usage.QuotaSnapshotPoint{
@@ -685,10 +701,11 @@ func TestGetAuthFileTrendUsesWeeklyResetCycleForRequestTotal(t *testing.T) {
 	}
 
 	var payload struct {
-		AuthIndex         string `json:"auth_index"`
-		RequestTotal      int64  `json:"request_total"`
-		CycleRequestTotal int64  `json:"cycle_request_total"`
-		CycleStart        string `json:"cycle_start"`
+		AuthIndex         string  `json:"auth_index"`
+		RequestTotal      int64   `json:"request_total"`
+		CycleRequestTotal int64   `json:"cycle_request_total"`
+		CycleCostTotal    float64 `json:"cycle_cost_total"`
+		CycleStart        string  `json:"cycle_start"`
 		DailyUsage        []struct {
 			Date     string `json:"date"`
 			Requests int64  `json:"requests"`
@@ -715,6 +732,9 @@ func TestGetAuthFileTrendUsesWeeklyResetCycleForRequestTotal(t *testing.T) {
 	}
 	if payload.CycleRequestTotal != 2 {
 		t.Fatalf("cycle_request_total = %d, want 2", payload.CycleRequestTotal)
+	}
+	if math.Abs(payload.CycleCostTotal-0.008) > 1e-12 {
+		t.Fatalf("cycle_cost_total = %v, want 0.008", payload.CycleCostTotal)
 	}
 	if payload.CycleStart != cycleStart.Format(time.RFC3339) {
 		t.Fatalf("cycle_start = %q, want %q", payload.CycleStart, cycleStart.Format(time.RFC3339))
