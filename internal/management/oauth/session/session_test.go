@@ -76,3 +76,32 @@ func TestWriteCallbackFileForPendingRejectsCompletedSession(t *testing.T) {
 		t.Fatalf("WriteCallbackFileForPending() error = %v, want ErrNotPending", err)
 	}
 }
+
+func TestWaitCallbackFileReadsAndRemovesPayload(t *testing.T) {
+	store := NewStore(time.Minute)
+	store.Register("session-1", "codex")
+	authDir := t.TempDir()
+	if _, err := WriteCallbackFile(authDir, "codex", "session-1", "code", ""); err != nil {
+		t.Fatalf("WriteCallbackFile() error = %v", err)
+	}
+
+	payload, err := store.WaitCallbackFile(authDir, "codex", "session-1", time.Second, time.Millisecond)
+	if err != nil {
+		t.Fatalf("WaitCallbackFile() error = %v", err)
+	}
+	if payload["code"] != "code" || payload["state"] != "session-1" {
+		t.Fatalf("payload = %#v, want callback code and state", payload)
+	}
+	if _, err := os.Stat(filepath.Join(authDir, ".oauth-codex-session-1.oauth")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("callback file stat error = %v, want not exist", err)
+	}
+}
+
+func TestWaitCallbackFileReturnsNotPending(t *testing.T) {
+	store := NewStore(time.Minute)
+
+	_, err := store.WaitCallbackFile(t.TempDir(), "codex", "session-1", time.Millisecond, time.Millisecond)
+	if !errors.Is(err, ErrNotPending) {
+		t.Fatalf("WaitCallbackFile() error = %v, want ErrNotPending", err)
+	}
+}

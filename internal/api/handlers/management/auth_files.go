@@ -1124,40 +1124,29 @@ func (h *Handler) RequestCodexToken(c *gin.Context) {
 		}
 
 		// Wait for callback file
-		waitFile := filepath.Join(h.cfg.AuthDir, fmt.Sprintf(".oauth-codex-%s.oauth", state))
-		deadline := time.Now().Add(oauthCallbackWaitTimeout)
-		var code string
-		for {
-			if !IsOAuthSessionPending(state, "codex") {
+		resultMap, errWait := WaitOAuthCallbackFile(h.cfg.AuthDir, "codex", state, oauthCallbackWaitTimeout)
+		if errWait != nil {
+			if errors.Is(errWait, errOAuthSessionNotPending) {
 				return
 			}
-			if time.Now().After(deadline) {
-				authErr := codex.NewAuthenticationError(codex.ErrCallbackTimeout, fmt.Errorf("timeout waiting for OAuth callback"))
-				log.Error(codex.GetUserFriendlyMessage(authErr))
-				SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
-				return
-			}
-			if data, errR := os.ReadFile(waitFile); errR == nil {
-				var m map[string]string
-				_ = json.Unmarshal(data, &m)
-				_ = os.Remove(waitFile)
-				if errStr := m["error"]; errStr != "" {
-					oauthErr := codex.NewOAuthError(errStr, "", http.StatusBadRequest)
-					log.Error(codex.GetUserFriendlyMessage(oauthErr))
-					SetOAuthSessionError(state, "Bad Request")
-					return
-				}
-				if m["state"] != state {
-					authErr := codex.NewAuthenticationError(codex.ErrInvalidState, fmt.Errorf("expected %s, got %s", state, m["state"]))
-					SetOAuthSessionError(state, "State code error")
-					log.Error(codex.GetUserFriendlyMessage(authErr))
-					return
-				}
-				code = m["code"]
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
+			authErr := codex.NewAuthenticationError(codex.ErrCallbackTimeout, errWait)
+			log.Error(codex.GetUserFriendlyMessage(authErr))
+			SetOAuthSessionError(state, "Timeout waiting for OAuth callback")
+			return
 		}
+		if errStr := resultMap["error"]; errStr != "" {
+			oauthErr := codex.NewOAuthError(errStr, "", http.StatusBadRequest)
+			log.Error(codex.GetUserFriendlyMessage(oauthErr))
+			SetOAuthSessionError(state, "Bad Request")
+			return
+		}
+		if resultMap["state"] != state {
+			authErr := codex.NewAuthenticationError(codex.ErrInvalidState, fmt.Errorf("expected %s, got %s", state, resultMap["state"]))
+			SetOAuthSessionError(state, "State code error")
+			log.Error(codex.GetUserFriendlyMessage(authErr))
+			return
+		}
+		code := resultMap["code"]
 
 		log.Debug("Authorization code received, exchanging for tokens...")
 		// Exchange code for tokens using internal auth service
