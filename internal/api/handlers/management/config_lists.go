@@ -12,6 +12,7 @@ import (
 	configaccess "github.com/router-for-me/CLIProxyAPI/v6/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	ampsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/amp"
+	oauthsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/oauth"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
@@ -1474,9 +1475,16 @@ func (h *Handler) DeleteVertexCompatKey(c *gin.Context) {
 	c.JSON(400, gin.H{"error": "missing api-key or index"})
 }
 
+func oauthSettingsService(h *Handler) *oauthsettings.Service {
+	if h == nil {
+		return oauthsettings.NewService(nil)
+	}
+	return oauthsettings.NewService(h.cfg)
+}
+
 // oauth-excluded-models: map[string][]string
 func (h *Handler) GetOAuthExcludedModels(c *gin.Context) {
-	c.JSON(200, gin.H{"oauth-excluded-models": config.NormalizeOAuthExcludedModels(h.cfg.OAuthExcludedModels)})
+	c.JSON(200, gin.H{"oauth-excluded-models": oauthSettingsService(h).ExcludedModels()})
 }
 
 func (h *Handler) PutOAuthExcludedModels(c *gin.Context) {
@@ -1496,8 +1504,8 @@ func (h *Handler) PutOAuthExcludedModels(c *gin.Context) {
 		}
 		entries = wrapper.Items
 	}
-	h.cfg.OAuthExcludedModels = config.NormalizeOAuthExcludedModels(entries)
-	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, h.cfg.OAuthExcludedModels)
+	setting := oauthSettingsService(h).SetExcludedModels(entries)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, setting)
 }
 
 func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
@@ -1509,59 +1517,34 @@ func (h *Handler) PatchOAuthExcludedModels(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid body"})
 		return
 	}
-	provider := strings.ToLower(strings.TrimSpace(*body.Provider))
-	if provider == "" {
+	setting, err := oauthSettingsService(h).PatchExcludedModels(*body.Provider, body.Models)
+	if err == oauthsettings.ErrInvalidProvider {
 		c.JSON(400, gin.H{"error": "invalid provider"})
 		return
 	}
-	normalized := config.NormalizeExcludedModels(body.Models)
-	if len(normalized) == 0 {
-		if h.cfg.OAuthExcludedModels == nil {
-			c.JSON(404, gin.H{"error": "provider not found"})
-			return
-		}
-		if _, ok := h.cfg.OAuthExcludedModels[provider]; !ok {
-			c.JSON(404, gin.H{"error": "provider not found"})
-			return
-		}
-		delete(h.cfg.OAuthExcludedModels, provider)
-		if len(h.cfg.OAuthExcludedModels) == 0 {
-			h.cfg.OAuthExcludedModels = nil
-		}
-		h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, h.cfg.OAuthExcludedModels)
+	if err == oauthsettings.ErrProviderNotFound {
+		c.JSON(404, gin.H{"error": "provider not found"})
 		return
 	}
-	if h.cfg.OAuthExcludedModels == nil {
-		h.cfg.OAuthExcludedModels = make(map[string][]string)
-	}
-	h.cfg.OAuthExcludedModels[provider] = normalized
-	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, h.cfg.OAuthExcludedModels)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, setting)
 }
 
 func (h *Handler) DeleteOAuthExcludedModels(c *gin.Context) {
-	provider := strings.ToLower(strings.TrimSpace(c.Query("provider")))
-	if provider == "" {
+	setting, err := oauthSettingsService(h).DeleteExcludedModels(c.Query("provider"))
+	if err == oauthsettings.ErrInvalidProvider {
 		c.JSON(400, gin.H{"error": "missing provider"})
 		return
 	}
-	if h.cfg.OAuthExcludedModels == nil {
+	if err == oauthsettings.ErrProviderNotFound {
 		c.JSON(404, gin.H{"error": "provider not found"})
 		return
 	}
-	if _, ok := h.cfg.OAuthExcludedModels[provider]; !ok {
-		c.JSON(404, gin.H{"error": "provider not found"})
-		return
-	}
-	delete(h.cfg.OAuthExcludedModels, provider)
-	if len(h.cfg.OAuthExcludedModels) == 0 {
-		h.cfg.OAuthExcludedModels = nil
-	}
-	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, h.cfg.OAuthExcludedModels)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthExcludedModels, setting)
 }
 
 // oauth-model-alias: map[string][]OAuthModelAlias
 func (h *Handler) GetOAuthModelAlias(c *gin.Context) {
-	c.JSON(200, gin.H{"oauth-model-alias": sanitizedOAuthModelAlias(h.cfg.OAuthModelAlias)})
+	c.JSON(200, gin.H{"oauth-model-alias": oauthSettingsService(h).ModelAlias()})
 }
 
 func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
@@ -1581,8 +1564,8 @@ func (h *Handler) PutOAuthModelAlias(c *gin.Context) {
 		}
 		entries = wrapper.Items
 	}
-	h.cfg.OAuthModelAlias = sanitizedOAuthModelAlias(entries)
-	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias)
+	setting := oauthSettingsService(h).SetModelAlias(entries)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, setting)
 }
 
 func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
@@ -1601,35 +1584,16 @@ func (h *Handler) PatchOAuthModelAlias(c *gin.Context) {
 	} else if body.Provider != nil {
 		channelRaw = *body.Provider
 	}
-	channel := strings.ToLower(strings.TrimSpace(channelRaw))
-	if channel == "" {
+	setting, err := oauthSettingsService(h).PatchModelAlias(channelRaw, body.Aliases)
+	if err == oauthsettings.ErrInvalidChannel {
 		c.JSON(400, gin.H{"error": "invalid channel"})
 		return
 	}
-
-	normalizedMap := sanitizedOAuthModelAlias(map[string][]config.OAuthModelAlias{channel: body.Aliases})
-	normalized := normalizedMap[channel]
-	if len(normalized) == 0 {
-		if h.cfg.OAuthModelAlias == nil {
-			c.JSON(404, gin.H{"error": "channel not found"})
-			return
-		}
-		if _, ok := h.cfg.OAuthModelAlias[channel]; !ok {
-			c.JSON(404, gin.H{"error": "channel not found"})
-			return
-		}
-		delete(h.cfg.OAuthModelAlias, channel)
-		if len(h.cfg.OAuthModelAlias) == 0 {
-			h.cfg.OAuthModelAlias = nil
-		}
-		h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias)
+	if err == oauthsettings.ErrChannelNotFound {
+		c.JSON(404, gin.H{"error": "channel not found"})
 		return
 	}
-	if h.cfg.OAuthModelAlias == nil {
-		h.cfg.OAuthModelAlias = make(map[string][]config.OAuthModelAlias)
-	}
-	h.cfg.OAuthModelAlias[channel] = normalized
-	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, setting)
 }
 
 func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
@@ -1641,19 +1605,12 @@ func (h *Handler) DeleteOAuthModelAlias(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "missing channel"})
 		return
 	}
-	if h.cfg.OAuthModelAlias == nil {
+	setting, err := oauthSettingsService(h).DeleteModelAlias(channel)
+	if err == oauthsettings.ErrChannelNotFound {
 		c.JSON(404, gin.H{"error": "channel not found"})
 		return
 	}
-	if _, ok := h.cfg.OAuthModelAlias[channel]; !ok {
-		c.JSON(404, gin.H{"error": "channel not found"})
-		return
-	}
-	delete(h.cfg.OAuthModelAlias, channel)
-	if len(h.cfg.OAuthModelAlias) == 0 {
-		h.cfg.OAuthModelAlias = nil
-	}
-	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, h.cfg.OAuthModelAlias)
+	h.persistRuntimeSetting(c, usage.RuntimeSettingOAuthModelAlias, setting)
 }
 
 // codex-api-key: []CodexKey
@@ -1983,28 +1940,6 @@ func normalizeVertexCompatKey(entry *config.VertexCompatKey) {
 		normalized = append(normalized, model)
 	}
 	entry.Models = normalized
-}
-
-func sanitizedOAuthModelAlias(entries map[string][]config.OAuthModelAlias) map[string][]config.OAuthModelAlias {
-	if len(entries) == 0 {
-		return nil
-	}
-	copied := make(map[string][]config.OAuthModelAlias, len(entries))
-	for channel, aliases := range entries {
-		if len(aliases) == 0 {
-			continue
-		}
-		copied[channel] = append([]config.OAuthModelAlias(nil), aliases...)
-	}
-	if len(copied) == 0 {
-		return nil
-	}
-	cfg := config.Config{OAuthModelAlias: copied}
-	cfg.SanitizeOAuthModelAlias()
-	if len(cfg.OAuthModelAlias) == 0 {
-		return nil
-	}
-	return cfg.OAuthModelAlias
 }
 
 func ampSettingsService(h *Handler) *ampsettings.Service {

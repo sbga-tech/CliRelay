@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	oauthsettings "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/oauth"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
 )
 
@@ -349,7 +350,7 @@ func renameOAuthModelAliasChannels(cfg *config.Config, oldNameSet map[string]str
 		changed = true
 	}
 	if changed {
-		cfg.OAuthModelAlias = sanitizedOAuthModelAlias(cfg.OAuthModelAlias)
+		cfg.OAuthModelAlias = oauthsettings.NormalizeModelAlias(cfg.OAuthModelAlias)
 	}
 	return changed
 }
@@ -367,7 +368,7 @@ func removeOAuthModelAliasChannels(cfg *config.Config, oldNameSet map[string]str
 		changed = true
 	}
 	if changed {
-		cfg.OAuthModelAlias = sanitizedOAuthModelAlias(cfg.OAuthModelAlias)
+		cfg.OAuthModelAlias = oauthsettings.NormalizeModelAlias(cfg.OAuthModelAlias)
 	}
 	return changed
 }
