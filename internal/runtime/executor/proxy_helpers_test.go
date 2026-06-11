@@ -2,13 +2,16 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
@@ -177,5 +180,49 @@ func TestNewProxyAwareHTTPClientSeparatesProxyTransportByTLSConfig(t *testing.T)
 	}
 	if transport.TLSClientConfig == nil || !transport.TLSClientConfig.InsecureSkipVerify {
 		t.Fatalf("expected insecure TLS setting to be applied to cached proxy transport")
+	}
+}
+
+func TestNewProxyAwareHTTPClientRecordsProxyUpstreamTiming(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.String() != "http://target.example/check" {
+			t.Fatalf("proxy received URL %q", r.URL.String())
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer proxyServer.Close()
+
+	ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	inbound := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ginCtx.Request = inbound
+	ctx := context.WithValue(inbound.Context(), util.ContextKeyGin, ginCtx)
+
+	cfg := &config.Config{}
+	auth := &cliproxyauth.Auth{ProxyURL: proxyServer.URL}
+	client := newProxyAwareHTTPClient(ctx, cfg, auth, 0)
+
+	resp, err := client.Get("http://target.example/check")
+	if err != nil {
+		t.Fatalf("client.Get returned error: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	var detail struct {
+		Egress map[string]any `json:"egress"`
+		Timing map[string]any `json:"upstream_timing"`
+	}
+	if err := json.Unmarshal([]byte(buildRequestDetailContent(ctx)), &detail); err != nil {
+		t.Fatalf("unmarshal request details: %v", err)
+	}
+	if detail.Egress["route_kind"] != "proxy" {
+		t.Fatalf("egress.route_kind = %v, want proxy", detail.Egress["route_kind"])
+	}
+	if detail.Timing["host"] != "target.example" {
+		t.Fatalf("upstream_timing.host = %v, want target.example", detail.Timing["host"])
+	}
+	if _, ok := detail.Timing["got_conn_reused"]; !ok {
+		t.Fatalf("upstream_timing missing got_conn_reused: %#v", detail.Timing)
 	}
 }

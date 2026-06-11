@@ -145,6 +145,7 @@ func (s *Server) applyInitialRuntimeConfig(cfg *config.Config, authManager *auth
 	}
 	managementasset.SetCurrentConfig(cfg)
 	auth.SetQuotaCooldownDisabled(cfg.DisableCooling)
+	s.applyProxyWarmupConfig(cfg)
 }
 
 func (s *Server) configureManagementHandler(
