@@ -247,6 +247,25 @@ passed
 
 PR #430 当前 base 为 `dev`。普通 build 已通过；但仓库策略 `translator-path-guard / ensure-no-translator-changes` 会阻止 PR 修改 `internal/translator/**`，因此该 PR 不能直接按普通策略合并。该阻塞不是测试失败，而是仓库治理策略。
 
+## Translator Path Guard 审计
+
+工作流文件：`.github/workflows/pr-path-guard.yml`
+
+规则摘要：
+
+- 触发条件：`pull_request` 的 `opened`、`synchronize`、`reopened`。
+- 检测范围：`internal/translator/**`。
+- 检测方式：`tj-actions/changed-files@v45`。
+- 失败条件：`steps.changed-files.outputs.any_changed == 'true'`。
+- 失败信息：`Changes under internal/translator are not allowed in pull requests.`，并提示 `You need to create an issue for our maintenance team to make the necessary changes.`
+
+本 PR 的触发证据：
+
+- PR #430 changed files 包含 `internal/translator/openai/claude/openai_claude_request.go`、`internal/translator/openai/claude/openai_claude_response.go` 及对应测试。
+- `translator-path-guard / ensure-no-translator-changes` 在 GitHub Actions run `27453301752`、job `81152865941` 中失败。
+- 日志显示比较范围为 `4852be243a4ff1827320be688d6d08c4de860975 (dev)` 到 `59f79e965c00beadedaa06b6f6020e90b485adb7 (codex/fix-empty-tool-name-state)`，并命中 `internal/translator/**`。
+- 该 workflow 未发现 label、手动输入、路径白名单或 PR body 开关，因此普通 PR 路径下没有不修改治理策略的自动通过方式。
+
 后续选项：
 
 - 维护者临时批准 translator 路径变更后合并 PR #430。
