@@ -116,6 +116,27 @@ func TestOpenAIClaudeEmptyToolNameStreamingChainSkipsInvalidHistory(t *testing.T
 	}
 }
 
+func TestOpenAIClaudeProviderStyleMissingToolNameStreamingChain(t *testing.T) {
+	stream := collectOpenAIToClaudeStreamViaSDK(t,
+		`data: {"id":"chatcmpl-provider-missing-name","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_missing","type":"function","function":{"arguments":"{\"path\":\"a.go\""}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-provider-missing-name","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":",\"offset\":10}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-provider-missing-name","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: {"id":"chatcmpl-provider-missing-name","object":"chat.completion.chunk","created":1,"model":"m","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":11,"total_tokens":18}}`,
+		`data: [DONE]`,
+	)
+
+	if strings.Contains(stream, `"type":"tool_use"`) {
+		t.Fatalf("provider-style arguments without function.name must not become Claude tool_use:\n%s", stream)
+	}
+	if strings.Contains(stream, `"type":"input_json_delta"`) || strings.Contains(stream, `"type":"content_block_stop"`) {
+		t.Fatalf("provider-style arguments without function.name must not emit orphan tool events:\n%s", stream)
+	}
+	if !strings.Contains(stream, `"stop_reason":"end_turn"`) {
+		t.Fatalf("provider-style missing tool name must finish as end_turn:\n%s", stream)
+	}
+	assertNoOrphanAnthropicContentEvents(t, stream)
+}
+
 func TestOpenAIClaudeLateValidToolNameStreamingChainPreservesToolResultReplay(t *testing.T) {
 	stream := collectOpenAIToClaudeStreamViaSDK(t,
 		`data: {"id":"chatcmpl-late-name","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_late","type":"function","function":{"arguments":"{\"path\":\"x\"}"}}]},"finish_reason":null}]}`,
@@ -176,6 +197,26 @@ func TestOpenAIClaudeMixedValidAndEmptyToolNameStreamingChain(t *testing.T) {
 	}
 	if !strings.Contains(stream, `"name":"Read"`) || !strings.Contains(stream, `"stop_reason":"tool_use"`) {
 		t.Fatalf("valid tool call should be preserved while empty one is skipped:\n%s", stream)
+	}
+	assertNoOrphanAnthropicContentEvents(t, stream)
+}
+
+func TestOpenAIClaudeProviderStyleParallelEmptyFirstIndexStreamingChain(t *testing.T) {
+	stream := collectOpenAIToClaudeStreamViaSDK(t,
+		`data: {"id":"chatcmpl-provider-parallel","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_empty","type":"function","function":{"arguments":"{\"path\":\"x\"}"}},{"index":1,"id":"call_valid","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"a.go\""}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-provider-parallel","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"   "}},{"index":1,"function":{"arguments":",\"offset\":10}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-provider-parallel","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	)
+
+	if got := strings.Count(stream, `"type":"tool_use"`); got != 1 {
+		t.Fatalf("expected exactly one valid Claude tool_use, got %d:\n%s", got, stream)
+	}
+	if strings.Contains(stream, "call_empty") {
+		t.Fatalf("empty first-index tool call must not appear in Claude stream:\n%s", stream)
+	}
+	if !strings.Contains(stream, `"name":"Read"`) || !strings.Contains(stream, `"stop_reason":"tool_use"`) {
+		t.Fatalf("valid parallel tool should be preserved while empty one is skipped:\n%s", stream)
 	}
 	assertNoOrphanAnthropicContentEvents(t, stream)
 }

@@ -8,9 +8,9 @@ PR：<https://github.com/kittors/CliRelay/pull/430>
 
 ## 结论
 
-本轮已经完成针对“OpenAI Chat Completions 空/空白 `function.name` 转 Claude `tool_use`”问题的系统分析、功能测试、接口级测试、场景链路测试和全仓回归。
+本轮已经完成针对“OpenAI Chat Completions 空/空白 `function.name` 转 Claude `tool_use`”问题的系统分析、功能测试、接口级测试、场景链路测试、高保真模拟测试和全仓回归。
 
-当前修复不是宣称数学意义上的“绝对保证”。更准确的结论是：本项目内与该问题相关的转换边界、SDK 注册链路、executor HTTP 接口链路、历史回放链路和全仓回归均已覆盖并通过；真实第三方供应商未来可能输出新的非标准事件形态，仍需要后续按样本补充回归。
+当前修复不是宣称数学意义上的“绝对保证”。更准确的结论是：本项目内与该问题相关的转换边界、SDK 注册链路、executor HTTP 接口链路、历史回放链路、参考项目推理出的 provider-shaped chunk 序列和全仓回归均已覆盖并通过；真实第三方供应商未来可能输出新的非标准事件形态，仍需要后续按样本补充回归。
 
 ## 问题范围
 
@@ -68,6 +68,25 @@ PR：<https://github.com/kittors/CliRelay/pull/430>
 - 只在 `content_block_start` 上判空也不够；必须同时处理 `input_json_delta`、`content_block_stop` 和 `stop_reason`。
 - 请求侧必须连同历史回放一起修，避免下一轮请求重新制造非法 `tool_calls` 或孤儿 `tool` message。
 
+## 高保真模拟设计
+
+由于当前没有真实第三方供应商账号和可复现线上样本，本轮没有停留在普通 mock，而是根据 `new-api` 与 `sub2api` 的状态机行为推理出更接近真实风险的输入形态：
+
+- `new-api` 风险形态 A：首个 tool chunk 已经包含 `arguments`，但 `function.name` 缺失或为空；结束 chunk 仍给 `finish_reason=tool_calls`。
+- `new-api` 风险形态 B：代码只在 `content_block_start` 上看 name，但 arguments 分支独立执行，因此可能出现没有 start 的 `input_json_delta`。
+- `sub2api` 风险形态 C：ChatCompletions bridge 首次看到 `tool_calls` 就创建后续工具状态；如果 name 当时尚未到达，后续可能携带空 name 继续进入 Responses/Anthropic 转换。
+- 并行工具风险形态 D：空工具调用在 `index=0`，有效工具调用在 `index=1`；修复不能因为跳过空 index 而破坏有效并行工具。
+
+对应新增模拟：
+
+- 转换器层新增 `TestOpenAIStreamingToolArgumentsWithoutValidNameSkipped`：arguments 到达但有效 name 永远不到，不能产生任何 Claude 工具事件，`stop_reason=end_turn`。
+- 转换器层新增 `TestOpenAIStreamingWhitespaceNameAfterBufferedArgumentsSkipped`：先缓存 arguments，后续 name 只有空白，仍不能启动工具块。
+- 转换器层新增 `TestOpenAIStreamingEmptyIndexBeforeValidIndexKeepsValidOnly`：并行工具空 index 先到，有效 index 保留，空工具完全不输出。
+- SDK 场景层新增 `TestOpenAIClaudeProviderStyleMissingToolNameStreamingChain`：走 public registry 验证 provider-shaped missing-name stream。
+- SDK 场景层新增 `TestOpenAIClaudeProviderStyleParallelEmptyFirstIndexStreamingChain`：走 public registry 验证并行工具空 index 先到的场景。
+- executor 接口层新增 `TestOpenAICompatExecutorClaudeStreamSkipsMissingToolNameArgumentsEndToEnd`：Claude dirty history -> OpenAI upstream request -> provider-shaped missing-name stream -> Claude response 全链路。
+- executor 接口层新增 `TestOpenAICompatExecutorClaudeStreamPreservesValidParallelToolWhenEmptyIndexFirstEndToEnd`：mock OpenAI-compatible HTTP SSE 返回空 index + 有效 index，验证最终 Claude stream 只保留有效工具。
+
 ## 功能测试
 
 文件：`internal/translator/openai/claude/openai_claude_response_test.go`
@@ -97,7 +116,7 @@ PR：<https://github.com/kittors/CliRelay/pull/430>
 
 ```text
 rtk go test ./internal/translator/openai/claude -count=1 -v
-Go test: 32 passed in 1 packages
+Go test: 35 passed in 1 packages
 ```
 
 ## 场景链路测试
@@ -118,7 +137,7 @@ Go test: 32 passed in 1 packages
 
 ```text
 rtk go test ./test -run 'TestOpenAIClaude.*Tool.*Chain|TestOpenAIClaudeEmptyToolNameNonStreamingChain' -count=1 -v
-Go test: 4 passed in 1 packages
+Go test: 6 passed in 1 packages
 ```
 
 ## 接口级测试
@@ -128,6 +147,8 @@ Go test: 4 passed in 1 packages
 新增测试：
 
 - `TestOpenAICompatExecutorClaudeStreamSkipsEmptyToolNameEndToEnd`
+- `TestOpenAICompatExecutorClaudeStreamSkipsMissingToolNameArgumentsEndToEnd`
+- `TestOpenAICompatExecutorClaudeStreamPreservesValidParallelToolWhenEmptyIndexFirstEndToEnd`
 - `TestOpenAICompatExecutorClaudeNonStreamSkipsEmptyToolNameEndToEnd`
 
 该组测试通过真实 `OpenAICompatExecutor` 和 `httptest.NewServer` mock OpenAI-compatible `/v1/chat/completions`，覆盖 executor 层的入站、出站和响应转换：
@@ -141,8 +162,8 @@ Go test: 4 passed in 1 packages
 执行结果：
 
 ```text
-rtk go test ./internal/runtime/executor -run 'TestOpenAICompatExecutorClaude(Stream|NonStream)SkipsEmptyToolNameEndToEnd' -count=1 -v
-Go test: 2 passed in 1 packages
+rtk go test ./internal/runtime/executor -run 'TestOpenAICompatExecutorClaude(StreamSkipsEmptyToolNameEndToEnd|StreamSkipsMissingToolNameArgumentsEndToEnd|StreamPreservesValidParallelToolWhenEmptyIndexFirstEndToEnd|NonStreamSkipsEmptyToolNameEndToEnd)' -count=1 -v
+Go test: 4 passed in 1 packages
 ```
 
 ## 回归测试
@@ -151,20 +172,20 @@ Go test: 2 passed in 1 packages
 
 ```text
 rtk go test ./internal/translator/... -count=1
-Go test: 107 passed in 30 packages
+Go test: 110 passed in 30 packages
 
 rtk go test ./test -count=1
-Go test: 274 passed in 1 packages
+Go test: 276 passed in 1 packages
 
 rtk go test ./internal/runtime/executor -count=1
-Go test: 219 passed in 1 packages
+Go test: 221 passed in 1 packages
 ```
 
 全仓回归与静态检查：
 
 ```text
 rtk go test ./... -count=1
-Go test: 2037 passed in 147 packages
+Go test: 2044 passed in 147 packages
 
 rtk go vet ./...
 Go vet: No issues found

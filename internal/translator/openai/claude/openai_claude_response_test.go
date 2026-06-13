@@ -167,6 +167,47 @@ func TestOpenAIStreamingToolArgumentsBeforeNamePreserved(t *testing.T) {
 	assertNoOrphanContentBlockEvents(t, out)
 }
 
+func TestOpenAIStreamingToolArgumentsWithoutValidNameSkipped(t *testing.T) {
+	out := collectOpenAIToClaudeStream(t,
+		`data: {"id":"chatcmpl-missing-name","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_missing","type":"function","function":{"arguments":"{\"path\":\"a.go\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-missing-name","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"extra\":true}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-missing-name","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	)
+
+	if strings.Contains(out, `"type":"tool_use"`) {
+		t.Fatalf("arguments without a valid function.name must not emit tool_use:\n%s", out)
+	}
+	if strings.Contains(out, `"type":"input_json_delta"`) {
+		t.Fatalf("arguments without a valid function.name must not emit input_json_delta:\n%s", out)
+	}
+	if strings.Contains(out, `"type":"content_block_stop"`) {
+		t.Fatalf("arguments without a valid function.name must not emit orphan content_block_stop:\n%s", out)
+	}
+	if !strings.Contains(out, `"stop_reason":"end_turn"`) {
+		t.Fatalf("tool_calls finish without a valid tool block should become end_turn:\n%s", out)
+	}
+	assertNoOrphanContentBlockEvents(t, out)
+}
+
+func TestOpenAIStreamingWhitespaceNameAfterBufferedArgumentsSkipped(t *testing.T) {
+	out := collectOpenAIToClaudeStream(t,
+		`data: {"id":"chatcmpl-blank-late-name","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_blank","type":"function","function":{"arguments":"{\"path\":\"a.go\"}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-blank-late-name","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"   "}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-blank-late-name","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"tail\":1}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-blank-late-name","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	)
+
+	if strings.Contains(out, `"type":"tool_use"`) || strings.Contains(out, `"type":"input_json_delta"`) {
+		t.Fatalf("buffered arguments with whitespace-only function.name must not emit tool events:\n%s", out)
+	}
+	if !strings.Contains(out, `"stop_reason":"end_turn"`) {
+		t.Fatalf("whitespace-only late tool name should leave stop_reason=end_turn:\n%s", out)
+	}
+	assertNoOrphanContentBlockEvents(t, out)
+}
+
 func TestOpenAIStreamingMixedValidAndEmptyToolCalls(t *testing.T) {
 	out := collectOpenAIToClaudeStream(t,
 		`data: {"id":"chatcmpl-mixed-tools","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_valid","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"a.go\"}"}},{"index":1,"id":"call_empty","type":"function","function":{"name":"","arguments":"{\"path\":\"x\"}"}}]},"finish_reason":null}]}`,
@@ -182,6 +223,26 @@ func TestOpenAIStreamingMixedValidAndEmptyToolCalls(t *testing.T) {
 	}
 	if !strings.Contains(out, `"name":"Read"`) || !strings.Contains(out, `"stop_reason":"tool_use"`) {
 		t.Fatalf("valid tool call should be preserved:\n%s", out)
+	}
+	assertNoOrphanContentBlockEvents(t, out)
+}
+
+func TestOpenAIStreamingEmptyIndexBeforeValidIndexKeepsValidOnly(t *testing.T) {
+	out := collectOpenAIToClaudeStream(t,
+		`data: {"id":"chatcmpl-empty-first-index","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_empty","type":"function","function":{"arguments":"{\"path\":\"x\"}"}},{"index":1,"id":"call_valid","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"a.go\""}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-empty-first-index","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":""}},{"index":1,"function":{"arguments":",\"tail\":true}"}}]},"finish_reason":null}]}`,
+		`data: {"id":"chatcmpl-empty-first-index","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	)
+
+	if got := strings.Count(out, `"type":"tool_use"`); got != 1 {
+		t.Fatalf("expected exactly one valid tool_use, got %d:\n%s", got, out)
+	}
+	if strings.Contains(out, `call_empty`) {
+		t.Fatalf("empty first-index tool call must not be emitted:\n%s", out)
+	}
+	if !strings.Contains(out, `"name":"Read"`) || !strings.Contains(out, `"stop_reason":"tool_use"`) {
+		t.Fatalf("valid second-index tool call should be preserved:\n%s", out)
 	}
 	assertNoOrphanContentBlockEvents(t, out)
 }
