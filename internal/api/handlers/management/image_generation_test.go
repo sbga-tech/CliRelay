@@ -506,6 +506,62 @@ func TestImageGenerationSizePresetsRejectInvalidSize(t *testing.T) {
 	}
 }
 
+func TestImageGenerationSizePresetsAcceptMaxSize(t *testing.T) {
+	initManagementModelsTestDB(t)
+
+	h := &Handler{}
+	rec := performModelsRequest(
+		http.MethodPut,
+		"/image-generation/size-presets",
+		[]byte(`{"sizes":["8192x8192"]}`),
+		h.PutImageGenerationSizePresets,
+	)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		Sizes []string `json:"sizes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal response: %v", err)
+	}
+	if got := strings.Join(body.Sizes, ","); !strings.Contains(got, "8192x8192") {
+		t.Fatalf("sizes = %v, want 8192x8192", body.Sizes)
+	}
+}
+
+func TestImageGenerationSizePresetsRejectOversizedSize(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "edge", body: `{"sizes":["8193x1024"]}`},
+		{name: "pixels", body: `{"sizes":["8192x8193"]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			initManagementModelsTestDB(t)
+
+			h := &Handler{}
+			rec := performModelsRequest(
+				http.MethodPut,
+				"/image-generation/size-presets",
+				[]byte(tt.body),
+				h.PutImageGenerationSizePresets,
+			)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "exceeds maximum") {
+				t.Fatalf("body = %s, want oversized error", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestPostImageGenerationTestAcceptsMultipartImageEdits(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

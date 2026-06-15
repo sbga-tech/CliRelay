@@ -24,11 +24,13 @@ import (
 )
 
 const (
-	imageGenerationModel        = "gpt-image-2"
-	imageGenerationAlt          = "images/generations"
-	imageEditsAlt               = "images/edits"
-	imageMaxUploads             = 5
-	imageGenerationSystemAPIKey = "POST /image-generation/test"
+	imageGenerationModel         = "gpt-image-2"
+	imageGenerationAlt           = "images/generations"
+	imageEditsAlt                = "images/edits"
+	imageMaxUploads              = 5
+	imageGenerationSystemAPIKey  = "POST /image-generation/test"
+	imageGenerationMaxSizeEdge   = 8192
+	imageGenerationMaxSizePixels = imageGenerationMaxSizeEdge * imageGenerationMaxSizeEdge
 )
 
 var defaultImageGenerationSizePresets = []string{
@@ -95,9 +97,9 @@ func normalizeImageGenerationSizePresets(values []string) ([]string, error) {
 		if strings.TrimSpace(value) == "" {
 			continue
 		}
-		size, ok := normalizeImageGenerationSizePreset(value)
-		if !ok {
-			return nil, fmt.Errorf("invalid size %q", value)
+		size, err := parseImageGenerationSizePreset(value)
+		if err != nil {
+			return nil, err
 		}
 		if _, exists := seen[size]; exists {
 			continue
@@ -143,29 +145,50 @@ func mergeImageGenerationSizePresets(lists ...[]string) []string {
 }
 
 func normalizeImageGenerationSizePreset(value string) (string, bool) {
+	size, err := parseImageGenerationSizePreset(value)
+	return size, err == nil
+}
+
+func parseImageGenerationSizePreset(value string) (string, error) {
 	normalized := strings.NewReplacer("X", "x", "×", "x", "*", "x").Replace(strings.TrimSpace(value))
 	parts := strings.Split(normalized, "x")
 	if len(parts) != 2 {
-		return "", false
+		return "", fmt.Errorf("invalid size %q", value)
 	}
-	width := strings.TrimSpace(parts[0])
-	height := strings.TrimSpace(parts[1])
-	if !validImageGenerationSizeDimension(width) || !validImageGenerationSizeDimension(height) {
-		return "", false
+	width, ok := parseImageGenerationSizeDimension(strings.TrimSpace(parts[0]))
+	if !ok {
+		return "", fmt.Errorf("invalid size %q", value)
 	}
-	return width + "x" + height, true
+	height, ok := parseImageGenerationSizeDimension(strings.TrimSpace(parts[1]))
+	if !ok {
+		return "", fmt.Errorf("invalid size %q", value)
+	}
+	if width > imageGenerationMaxSizeEdge || height > imageGenerationMaxSizeEdge || width*height > imageGenerationMaxSizePixels {
+		return "", fmt.Errorf(
+			"size %q exceeds maximum %dx%d pixels and %d on either edge",
+			value,
+			imageGenerationMaxSizeEdge,
+			imageGenerationMaxSizeEdge,
+			imageGenerationMaxSizeEdge,
+		)
+	}
+	return strconv.Itoa(width) + "x" + strconv.Itoa(height), nil
 }
 
-func validImageGenerationSizeDimension(value string) bool {
+func parseImageGenerationSizeDimension(value string) (int, bool) {
 	if value == "" || value[0] == '0' {
-		return false
+		return 0, false
 	}
 	for _, char := range value {
 		if char < '0' || char > '9' {
-			return false
+			return 0, false
 		}
 	}
-	return true
+	dimension, err := strconv.Atoi(value)
+	if err != nil || dimension <= 0 {
+		return 0, false
+	}
+	return dimension, true
 }
 
 func (h *Handler) PostImageGenerationTest(c *gin.Context) {
