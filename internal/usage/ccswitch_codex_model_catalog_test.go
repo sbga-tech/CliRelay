@@ -34,6 +34,9 @@ func TestBuildCcSwitchCodexModelCatalogUsesRequestModels(t *testing.T) {
 	}
 
 	deepseek := catalog.Models[1]
+	if deepseek.Model != deepseek.Slug {
+		t.Fatalf("model = %q, want same as slug %q", deepseek.Model, deepseek.Slug)
+	}
 	if deepseek.ContextWindow != ccSwitchCodexDefaultContextWindow {
 		t.Fatalf("context_window = %d, want %d", deepseek.ContextWindow, ccSwitchCodexDefaultContextWindow)
 	}

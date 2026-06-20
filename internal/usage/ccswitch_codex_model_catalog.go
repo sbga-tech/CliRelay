@@ -47,6 +47,7 @@ type CcSwitchCodexModelMessages struct {
 
 type CcSwitchCodexModelCatalogEntry struct {
 	Slug                          string                        `json:"slug"`
+	Model                         string                        `json:"model"`
 	DisplayName                   string                        `json:"display_name"`
 	Description                   string                        `json:"description"`
 	DefaultReasoningLevel         string                        `json:"default_reasoning_level"`
@@ -177,6 +178,7 @@ func buildCcSwitchCodexModelCatalogEntry(model string, priority int) CcSwitchCod
 
 	return CcSwitchCodexModelCatalogEntry{
 		Slug:                          model,
+		Model:                         model,
 		DisplayName:                   model,
 		Description:                   model,
 		DefaultReasoningLevel:         "medium",
