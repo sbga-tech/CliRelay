@@ -14,6 +14,7 @@ import (
 
 	gin "github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/middleware"
 	proxyconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 	internalrouting "github.com/router-for-me/CLIProxyAPI/v6/internal/routing"
@@ -692,7 +693,7 @@ func TestGetContextWithCancelClearsWriteDeadlineForStreamingRequests(t *testing.
 	req.Header.Set("Content-Type", "application/json")
 	c.Request = req
 	tracking := &deadlineTrackingWriter{ResponseWriter: c.Writer}
-	c.Writer = tracking
+	c.Writer = middleware.NewResponseWriterWrapper(tracking, nil, &middleware.RequestInfo{}, c)
 
 	handler := &sdkhandlers.BaseAPIHandler{Cfg: &sdkconfig.SDKConfig{}}
 	_, cancelHandler := handler.GetContextWithCancel(nil, c, c.Request.Context())

@@ -67,6 +67,11 @@ func NewResponseWriterWrapper(w gin.ResponseWriter, logger logging.RequestLogger
 	}
 }
 
+// Unwrap lets net/http.ResponseController reach the real connection through this logging wrapper.
+func (w *ResponseWriterWrapper) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // Write wraps the underlying ResponseWriter's Write method to capture response data.
 // For non-streaming responses, it writes to an internal buffer. For streaming responses,
 // it sends data chunks to a non-blocking channel for asynchronous logging.
