@@ -697,7 +697,12 @@ func TestInitDBEnsuresRequestLogLookupIndexes(t *testing.T) {
 		t.Fatalf("iterate index_list: %v", err)
 	}
 
-	for _, name := range []string{"idx_logs_api_key_timestamp", "idx_logs_api_key_id_timestamp"} {
+	for _, name := range []string{
+		"idx_logs_api_key_timestamp",
+		"idx_logs_api_key_id_timestamp",
+		"idx_logs_api_key_chart_cover",
+		"idx_logs_api_key_id_chart_cover",
+	} {
 		if !found[name] {
 			t.Fatalf("expected %s to exist after InitDB", name)
 		}
@@ -2036,6 +2041,27 @@ func TestQueryStatsAndHeatmapCountSessionsFromDetails(t *testing.T) {
 	yesterdayPoint := byDate[LocalDayKeyAt(yesterday)]
 	if yesterdayPoint.Requests != 1 || yesterdayPoint.Tokens != 3 || yesterdayPoint.Sessions != 1 {
 		t.Fatalf("yesterday heatmap point = %#v, want requests=1 tokens=3 sessions=1", yesterdayPoint)
+	}
+
+	chartData, err := QueryPublicChartData("sk-heatmap", 7)
+	if err != nil {
+		t.Fatalf("QueryPublicChartData() error = %v", err)
+	}
+	if chartData.Stats.Total != 3 || chartData.Stats.TotalTokens != 83 || chartData.Stats.TotalSessions != 2 {
+		t.Fatalf("public chart stats = %#v, want total=3 total_tokens=83 sessions=2", chartData.Stats)
+	}
+	if len(chartData.DailySeries) != 2 {
+		t.Fatalf("public chart daily len = %d, want 2", len(chartData.DailySeries))
+	}
+	if len(chartData.ModelDistribution) != 1 || chartData.ModelDistribution[0].Requests != 3 || chartData.ModelDistribution[0].Tokens != 83 {
+		t.Fatalf("public chart models = %#v, want one model with 3 requests and 83 tokens", chartData.ModelDistribution)
+	}
+	chartHeatmap := make(map[string]DailyHeatmapPoint, len(chartData.HeatmapSeries))
+	for _, point := range chartData.HeatmapSeries {
+		chartHeatmap[point.Date] = point
+	}
+	if chartHeatmap[LocalDayKeyAt(today)].Sessions != 1 || chartHeatmap[LocalDayKeyAt(yesterday)].Sessions != 1 {
+		t.Fatalf("public chart heatmap = %#v, want sessions by day populated", chartHeatmap)
 	}
 }
 

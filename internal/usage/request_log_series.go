@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -31,6 +32,205 @@ type ModelDistributionPoint struct {
 	Model    string `json:"model"`
 	Requests int64  `json:"requests"`
 	Tokens   int64  `json:"tokens"`
+}
+
+type PublicChartData struct {
+	DailySeries       []DailySeriesPoint
+	HeatmapSeries     []DailyHeatmapPoint
+	ModelDistribution []ModelDistributionPoint
+	Stats             LogStats
+}
+
+// QueryPublicChartData aggregates the public API-key lookup charts in one indexed pass.
+func QueryPublicChartData(apiKey string, days int) (PublicChartData, error) {
+	db := getReadDB()
+	if db == nil {
+		return PublicChartData{
+			DailySeries:       []DailySeriesPoint{},
+			HeatmapSeries:     []DailyHeatmapPoint{},
+			ModelDistribution: []ModelDistributionPoint{},
+			Stats:             LogStats{CacheRate: 0},
+		}, nil
+	}
+	if days < 1 {
+		days = 7
+	}
+
+	const heatmapDays = 365
+	scanDays := days
+	if scanDays < heatmapDays {
+		scanDays = heatmapDays
+	}
+	statsCutoff := CutoffStartUTC(days).Format(time.RFC3339)
+	heatmapCutoff := CutoffStartUTC(heatmapDays).Format(time.RFC3339)
+
+	params := LogQueryParams{APIKey: apiKey, Days: scanDays}
+	where, args := buildWhereClause(params)
+	queryArgs := make([]interface{}, 0, len(args)+2)
+	queryArgs = append(queryArgs, statsCutoff, heatmapCutoff)
+	queryArgs = append(queryArgs, args...)
+
+	rows, err := db.Query(`SELECT
+	             date(timestamp, 'localtime') as d,
+	             model,
+	             CASE WHEN failed = 1 OR failed = 'true' THEN 1 ELSE 0 END as failed_flag,
+	             input_tokens,
+	             output_tokens,
+	             total_tokens,
+	             cost,
+	             cached_tokens,
+	             CASE WHEN timestamp >= ? THEN 1 ELSE 0 END as in_stats_range,
+	             CASE WHEN timestamp >= ? THEN 1 ELSE 0 END as in_heatmap_range
+	      FROM request_logs`+where, queryArgs...)
+	if err != nil {
+		return PublicChartData{}, fmt.Errorf("usage: public chart data query: %w", err)
+	}
+	defer rows.Close()
+
+	dailyByDate := make(map[string]*DailySeriesPoint)
+	heatmapByDate := make(map[string]*DailyHeatmapPoint)
+	modelByName := make(map[string]*ModelDistributionPoint)
+	var stats LogStats
+	var effectiveInputTokens int64
+	var cachedTokens int64
+	var successCount int64
+
+	for rows.Next() {
+		var dateKey string
+		var model string
+		var failedFlag int
+		var inputTokens int64
+		var outputTokens int64
+		var totalTokens int64
+		var cost float64
+		var rowCachedTokens int64
+		var inStatsRange int
+		var inHeatmapRange int
+		if err := rows.Scan(&dateKey, &model, &failedFlag, &inputTokens, &outputTokens, &totalTokens, &cost, &rowCachedTokens, &inStatsRange, &inHeatmapRange); err != nil {
+			return PublicChartData{}, fmt.Errorf("usage: public chart data scan: %w", err)
+		}
+
+		if inHeatmapRange != 0 {
+			point := heatmapByDate[dateKey]
+			if point == nil {
+				point = &DailyHeatmapPoint{Date: dateKey}
+				heatmapByDate[dateKey] = point
+			}
+			point.Requests++
+			point.Tokens += totalTokens
+			point.Cost += cost
+		}
+
+		if inStatsRange == 0 {
+			continue
+		}
+		daily := dailyByDate[dateKey]
+		if daily == nil {
+			daily = &DailySeriesPoint{Date: dateKey}
+			dailyByDate[dateKey] = daily
+		}
+		daily.Requests++
+		if failedFlag != 0 {
+			daily.FailedReq++
+		} else {
+			successCount++
+		}
+		daily.InputTokens += int(inputTokens)
+		daily.OutputTokens += int(outputTokens)
+
+		modelPoint := modelByName[model]
+		if modelPoint == nil {
+			modelPoint = &ModelDistributionPoint{Model: model}
+			modelByName[model] = modelPoint
+		}
+		modelPoint.Requests++
+		modelPoint.Tokens += totalTokens
+
+		stats.Total++
+		stats.TotalTokens += totalTokens
+		stats.TotalCost += cost
+		effectiveInputTokens += effectiveInputTokenTotal(inputTokens, rowCachedTokens)
+		cachedTokens += rowCachedTokens
+	}
+	if err := rows.Err(); err != nil {
+		return PublicChartData{}, err
+	}
+
+	sessionsByDate, err := querySessionSetsByDate(params)
+	if err != nil {
+		return PublicChartData{}, err
+	}
+	statsStartDay := LocalDayKeyAt(CutoffStartUTC(days))
+	heatmapStartDay := LocalDayKeyAt(CutoffStartUTC(heatmapDays))
+	totalSessions := make(map[string]struct{})
+	for dateKey, sessions := range sessionsByDate {
+		if dateKey >= heatmapStartDay {
+			point := heatmapByDate[dateKey]
+			if point != nil {
+				point.Sessions = int64(len(sessions))
+			}
+		}
+		if dateKey >= statsStartDay {
+			for sessionID := range sessions {
+				totalSessions[sessionID] = struct{}{}
+			}
+		}
+	}
+	stats.TotalSessions = int64(len(totalSessions))
+	if stats.Total > 0 {
+		stats.SuccessRate = float64(successCount) / float64(stats.Total) * 100
+	}
+	stats.CacheRate = cacheRateFromTokenTotals(effectiveInputTokens, cachedTokens)
+
+	return PublicChartData{
+		DailySeries:       sortedDailySeries(dailyByDate),
+		HeatmapSeries:     sortedHeatmapSeries(heatmapByDate),
+		ModelDistribution: sortedModelDistribution(modelByName),
+		Stats:             stats,
+	}, nil
+}
+
+func effectiveInputTokenTotal(inputTokens, cachedTokens int64) int64 {
+	if cachedTokens > inputTokens {
+		return inputTokens + cachedTokens
+	}
+	return inputTokens
+}
+
+func sortedDailySeries(points map[string]*DailySeriesPoint) []DailySeriesPoint {
+	result := make([]DailySeriesPoint, 0, len(points))
+	for _, point := range points {
+		result = append(result, *point)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Date < result[j].Date
+	})
+	return result
+}
+
+func sortedHeatmapSeries(points map[string]*DailyHeatmapPoint) []DailyHeatmapPoint {
+	result := make([]DailyHeatmapPoint, 0, len(points))
+	for _, point := range points {
+		result = append(result, *point)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Date < result[j].Date
+	})
+	return result
+}
+
+func sortedModelDistribution(points map[string]*ModelDistributionPoint) []ModelDistributionPoint {
+	result := make([]ModelDistributionPoint, 0, len(points))
+	for _, point := range points {
+		result = append(result, *point)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Requests == result[j].Requests {
+			return result[i].Model < result[j].Model
+		}
+		return result[i].Requests > result[j].Requests
+	})
+	return result
 }
 
 // QueryDailySeries returns per-day aggregated request count and token usage for a given API key.

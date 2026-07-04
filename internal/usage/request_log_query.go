@@ -771,7 +771,7 @@ func buildSingleAPIKeySelectorClause(selector string) (string, []interface{}) {
 		return "", nil
 	}
 	if identity := ResolveAPIKeyIdentity(trimmed); identity != nil {
-		return " WHERE (api_key_id = ? OR (trim(coalesce(api_key_id, '')) = '' AND api_key = ?))", []interface{}{identity.ID, identity.Key}
+		return " WHERE (api_key_id = ? OR (api_key_id = '' AND api_key = ?))", []interface{}{identity.ID, identity.Key}
 	}
 	return " WHERE api_key = ?", []interface{}{trimmed}
 }
