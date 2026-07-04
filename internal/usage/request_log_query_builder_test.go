@@ -85,7 +85,7 @@ func TestBuildSingleAPIKeySelectorClauseUsesStableIdentityWhenAvailable(t *testi
 	}
 
 	clause, args := buildSingleAPIKeySelectorClause(" sk-live ")
-	wantClause := " WHERE (api_key_id = ? OR (trim(coalesce(api_key_id, '')) = '' AND api_key = ?))"
+	wantClause := " WHERE (api_key_id = ? OR (api_key_id = '' AND api_key = ?))"
 	if clause != wantClause {
 		t.Fatalf("clause = %q, want %q", clause, wantClause)
 	}
