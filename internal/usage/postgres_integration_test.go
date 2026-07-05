@@ -1,7 +1,11 @@
 package usage
 
 import (
+	"context"
+	"database/sql"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -112,6 +116,180 @@ func TestPostgresRuntimeDataStackIntegration(t *testing.T) {
 	if redisAddr := os.Getenv("CLIRELAY_REDIS_TEST_ADDR"); redisAddr != "" {
 		InitRedis(config.RedisConfig{Enable: true, Addr: redisAddr})
 		StopRedis()
+	}
+}
+
+func TestPostgresRuntimeDataStackConcurrencyConstraintsAndHotPaths(t *testing.T) {
+	dsn := os.Getenv("CLIRELAY_POSTGRES_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
+	}
+	CloseDB()
+	t.Cleanup(CloseDB)
+
+	if err := InitPostgres(config.PostgresConfig{
+		DSN:          dsn,
+		MaxOpenConns: 8,
+		MaxIdleConns: 2,
+	}, config.RequestLogStorageConfig{StoreContent: true}, time.UTC); err != nil {
+		t.Fatalf("InitPostgres() error = %v", err)
+	}
+	db := getDB()
+	if db == nil {
+		t.Fatal("postgres db is nil")
+	}
+	truncatePostgresRuntimeTables(t, db)
+
+	if err := UpsertAPIKey(APIKeyRow{Key: "sk-hotpath", ID: "hotpath", Name: "Hot Path"}); err != nil {
+		t.Fatalf("UpsertAPIKey hotpath: %v", err)
+	}
+	if err := UpsertModelPricingV2("gpt-hotpath", 1, 2, 0, 0, 0); err != nil {
+		t.Fatalf("UpsertModelPricingV2 hotpath: %v", err)
+	}
+
+	const workers = 12
+	const perWorker = 25
+	var wg sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				InsertLogWithDetailsIdentitySubject(
+					"sk-hotpath",
+					"hotpath",
+					"subject-hotpath",
+					"Hot Path",
+					"gpt-hotpath",
+					"codex",
+					"codex",
+					"auth-hotpath",
+					i%7 == 0,
+					time.Now().UTC().Add(time.Duration(worker*perWorker+i)*time.Millisecond),
+					100,
+					20,
+					TokenStats{InputTokens: 3, OutputTokens: 4, TotalTokens: 7},
+					`{"model":"gpt-hotpath"}`,
+					`{"ok":true}`,
+					`{"worker":true}`,
+				)
+			}
+		}(worker)
+	}
+	wg.Wait()
+
+	logs, err := QueryLogs(LogQueryParams{Page: 1, Size: 50, Days: 1, APIKeys: []string{"sk-hotpath"}})
+	if err != nil {
+		t.Fatalf("QueryLogs hotpath: %v", err)
+	}
+	if want := int64(workers * perWorker); logs.Total != want {
+		t.Fatalf("QueryLogs hotpath total = %d, want %d", logs.Total, want)
+	}
+	stats, err := QueryStats(LogQueryParams{Days: 1, APIKeys: []string{"sk-hotpath"}})
+	if err != nil {
+		t.Fatalf("QueryStats hotpath: %v", err)
+	}
+	if wantTokens := int64(workers * perWorker * 7); stats.TotalTokens != wantTokens {
+		t.Fatalf("QueryStats total_tokens = %d, want %d", stats.TotalTokens, wantTokens)
+	}
+	if filters, err := QueryFilters(1); err != nil || len(filters.APIKeys) != 1 || filters.APIKeys[0] != "sk-hotpath" {
+		t.Fatalf("QueryFilters filters=%#v err=%v", filters, err)
+	}
+
+	if _, err := db.Exec(`INSERT INTO api_keys (key, id, name) VALUES (?, ?, ?)`, "sk-dup-a", "dup-id", "A"); err != nil {
+		t.Fatalf("insert duplicate fixture A: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO api_keys (key, id, name) VALUES (?, ?, ?)`, "sk-dup-b", "dup-id", "B"); err == nil {
+		t.Fatal("duplicate api_keys.id insert succeeded, want unique constraint failure")
+	}
+	if err := ReplaceAllCcSwitchImportConfigs([]CcSwitchImportConfigRow{
+		{ID: "cc-dup-a", ClientType: "claude", RoutePath: "/cc/dup", EndpointPath: "/v1/messages"},
+		{ID: "cc-dup-b", ClientType: "claude", RoutePath: "/cc/dup", EndpointPath: "/v1/messages"},
+	}); err == nil {
+		t.Fatal("ReplaceAllCcSwitchImportConfigs duplicate route_path succeeded, want constraint/validation failure")
+	}
+
+	firstID := logs.Items[0].ID
+	if deleted, err := DeleteLogsByAPIKey("sk-hotpath"); err != nil || deleted != int64(workers*perWorker) {
+		t.Fatalf("DeleteLogsByAPIKey deleted=%d err=%v", deleted, err)
+	}
+	var contentRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM request_log_content WHERE log_id = ?`, firstID).Scan(&contentRows); err != nil {
+		t.Fatalf("count cascaded request_log_content: %v", err)
+	}
+	if contentRows != 0 {
+		t.Fatalf("request_log_content rows after cascade = %d, want 0", contentRows)
+	}
+
+	assertPostgresExplainUsesIndex(t, db, "api_key timestamp", `
+		EXPLAIN (FORMAT TEXT)
+		SELECT id FROM request_logs
+		 WHERE api_key = ? AND timestamp >= ?
+		 ORDER BY timestamp DESC
+		 LIMIT 20
+	`, "idx_logs_api_key", "sk-hotpath", time.Now().UTC().Add(-24*time.Hour))
+	assertPostgresExplainUsesIndex(t, db, "api_key_id timestamp", `
+		EXPLAIN (FORMAT TEXT)
+		SELECT id FROM request_logs
+		 WHERE api_key_id = ? AND timestamp >= ?
+		 ORDER BY timestamp DESC
+		 LIMIT 20
+	`, "idx_logs_api_key_id", "hotpath", time.Now().UTC().Add(-24*time.Hour))
+}
+
+func truncatePostgresRuntimeTables(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`
+		TRUNCATE
+			request_log_content,
+			request_logs,
+			api_keys,
+			api_key_permission_profiles,
+			model_pricing,
+			model_configs,
+			proxy_pool,
+			routing_config,
+			runtime_settings,
+			identity_fingerprints,
+			ccswitch_import_configs
+		RESTART IDENTITY CASCADE
+	`); err != nil {
+		t.Fatalf("truncate runtime tables: %v", err)
+	}
+}
+
+func assertPostgresExplainUsesIndex(t *testing.T, db interface {
+	Conn(context.Context) (*sql.Conn, error)
+}, label, query, indexFragment string, args ...any) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("postgres conn for EXPLAIN %s: %v", label, err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SET enable_seqscan = off`); err != nil {
+		t.Fatalf("disable seqscan for EXPLAIN %s: %v", label, err)
+	}
+	rows, err := conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		t.Fatalf("EXPLAIN %s: %v", label, err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var line string
+		if err := rows.Scan(&line); err != nil {
+			t.Fatalf("scan EXPLAIN %s: %v", label, err)
+		}
+		plan.WriteString(line)
+		plan.WriteByte('\n')
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("EXPLAIN rows %s: %v", label, err)
+	}
+	if !strings.Contains(plan.String(), indexFragment) {
+		t.Fatalf("EXPLAIN %s did not use %s:\n%s", label, indexFragment, plan.String())
 	}
 }
 

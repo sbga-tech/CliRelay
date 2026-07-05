@@ -14,6 +14,12 @@ For Docker Compose, the bundled `docker-compose.yml` starts `postgres:15-alpine`
 
 For non-Compose deployments, set the same values in the environment or edit `postgres.dsn` and `redis.*` in `config.yaml`.
 
+## Deploy Gate
+
+Pushes to `dev` build the Linux binary but do not deploy to the server unless repository variable `CLIRELAY_DEV_AUTO_DEPLOY` is set to `true`. Prefer leaving it disabled for this migration and running the deploy workflow manually after PostgreSQL, Redis, SQLite import dry-run/apply, and row-count/checksum checks are complete.
+
+The blue-green deploy script refuses to proceed unless `postgres.dsn` or `CLIRELAY_POSTGRES_DSN` is configured. If Redis is enabled, it also requires `redis.addr` or `CLIRELAY_REDIS_ADDR`.
+
 ## Inspect Legacy SQLite
 
 Run the read-only inventory before importing any old `usage.db`:
