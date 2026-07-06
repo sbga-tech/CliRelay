@@ -584,11 +584,11 @@ func runComposeUpdate(ctx context.Context, composeFile string, envFile string, p
 		if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "up", "-d", "postgres", "redis"); err != nil {
 			return err
 		}
-		reporter.Stage("migrating", "checking legacy SQLite migration before service restart")
+		reporter.Stage("migrating", "checking runtime data migration before service restart")
 		if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "run", "--rm", "clirelay-migrate"); err != nil {
 			return err
 		}
-		reporter.Stage("migrating", "legacy SQLite migration check finished before service restart")
+		reporter.Stage("migrating", "runtime data migration check finished before service restart")
 	}
 	reporter.Stage("restarting", "recreating service container without restarting dependencies")
 	if err := runDockerCompose(ctx, composeFile, envFile, projectName, reporter, "up", "-d", "--no-deps", "--remove-orphans", service); err != nil {
@@ -654,7 +654,7 @@ func upgradeComposeRuntimeStack(composeText string, projectDir string, service s
 		target = map[string]any{}
 		services[targetName] = target
 	}
-	appImage := stringValue(target["image"])
+	appImage := imageFallback(stringValue(target["image"]))
 	if appImage == "" {
 		appImage = "ghcr.io/kittors/clirelay:latest"
 	}
@@ -709,10 +709,22 @@ func composeAppImage(composeText string, service string) string {
 	}
 	if target, ok := stringMap(services[targetName]); ok {
 		if image := stringValue(target["image"]); image != "" {
-			return image
+			return imageFallback(image)
 		}
 	}
 	return "ghcr.io/kittors/clirelay:latest"
+}
+
+func imageFallback(image string) string {
+	text := strings.TrimSpace(image)
+	const cliProxyImagePrefix = "${CLI_PROXY_IMAGE:-"
+	if strings.HasPrefix(text, cliProxyImagePrefix) && strings.HasSuffix(text, "}") {
+		fallback := strings.TrimSuffix(strings.TrimPrefix(text, cliProxyImagePrefix), "}")
+		if strings.TrimSpace(fallback) != "" {
+			return strings.TrimSpace(fallback)
+		}
+	}
+	return text
 }
 
 func firstApplicationService(services map[string]any) string {
