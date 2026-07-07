@@ -215,6 +215,7 @@ func (e *OllamaCloudExecutor) prepareDirect(ctx context.Context, auth *cliproxya
 	if err != nil {
 		return nil, nil, err
 	}
+	updated = applyProviderPromptCaching(updated, req.Payload, auth, e.Identifier(), execCtx.BaseModel, target, opts)
 	return execCtx, updated, nil
 }
 

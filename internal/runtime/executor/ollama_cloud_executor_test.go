@@ -73,6 +73,38 @@ func TestOllamaCloudExecutorRoutesResponsesToOfficialEndpoint(t *testing.T) {
 	}
 }
 
+func TestOllamaCloudExecutorResponsesAddsSessionPromptCacheKey(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"model":"glm-5.2","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":3},"output_tokens":1,"total_tokens":11}}`))
+	}))
+	defer server.Close()
+
+	exec := NewOllamaCloudExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{ID: "ollama-cloud:apikey:one", Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL}}
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "glm-5.2",
+		Payload: []byte(`{"model":"glm-5.2","input":"hi"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Metadata: map[string]any{
+			cliproxyexecutor.SessionStickyMetadataKey: "header:x-session-id:session-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	key := gjson.GetBytes(gotBody, "prompt_cache_key").String()
+	if key == "" {
+		t.Fatalf("prompt_cache_key missing in upstream body: %s", gotBody)
+	}
+	if strings.Contains(key, "session-1") {
+		t.Fatalf("prompt_cache_key leaked raw session: %q", key)
+	}
+}
+
 func TestOllamaCloudExecutorStreamsResponsesFromOfficialEndpoint(t *testing.T) {
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +136,29 @@ func TestOllamaCloudExecutorStreamsResponsesFromOfficialEndpoint(t *testing.T) {
 	}
 	if got := chunks.String(); got != "event: response.created\n"+`data: {"type":"response.created","response":{"id":"resp_1"}}`+"\n\n" {
 		t.Fatalf("stream payload = %q", got)
+	}
+}
+
+func TestOllamaCloudExecutorClaudeMessagesAddsCacheControl(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"glm-5.2","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	exec := NewOllamaCloudExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test-key", "base_url": server.URL}}
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "glm-5.2",
+		Payload: []byte(`{"model":"glm-5.2","max_tokens":1024,"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"answer"},{"role":"user","content":"again"}]}`),
+	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, "messages.0.content.0.cache_control.type").String(); got != "ephemeral" {
+		t.Fatalf("cache_control = %q, want ephemeral; body=%s", got, gotBody)
 	}
 }
 

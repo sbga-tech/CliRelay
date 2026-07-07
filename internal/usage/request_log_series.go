@@ -440,9 +440,9 @@ func sessionDetailString(value gjson.Result) string {
 func sessionDetailKeyRank(key string) int {
 	normalized := strings.NewReplacer("-", "_", " ", "_").Replace(strings.ToLower(strings.TrimSpace(key)))
 	switch normalized {
-	case "session_id", "sessionid":
+	case "session_id", "sessionid", "x_session_id", "x_sessionid":
 		return 0
-	case "conversation_id", "conversationid":
+	case "conversation_id", "conversationid", "x_conversation_id", "x_conversationid", "openai_conversation_id":
 		return 1
 	default:
 		return 99

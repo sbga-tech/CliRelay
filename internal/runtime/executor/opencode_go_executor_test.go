@@ -134,7 +134,12 @@ func TestOpenCodeGoExecutorUsesVisionFallbackForResponsesFunctionCallOutputImage
 	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "deepseek-v4-flash",
 		Payload: payload,
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse})
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Metadata: map[string]any{
+			cliproxyexecutor.SessionStickyMetadataKey: "header:x-session-id:opencode-session",
+		},
+	})
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
@@ -612,7 +617,12 @@ func TestOpenCodeGoExecutorSupportsResponsesAPIForOpenAIModels(t *testing.T) {
 	resp, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
 		Model:   "deepseek-v4-flash",
 		Payload: payload,
-	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAIResponse})
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse,
+		Metadata: map[string]any{
+			cliproxyexecutor.SessionStickyMetadataKey: "header:x-session-id:opencode-session",
+		},
+	})
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
@@ -622,6 +632,9 @@ func TestOpenCodeGoExecutorSupportsResponsesAPIForOpenAIModels(t *testing.T) {
 	}
 	if !gjson.GetBytes(gotBody, "messages").Exists() || gjson.GetBytes(gotBody, "input").Exists() {
 		t.Fatalf("expected upstream chat-completions body, got %s", string(gotBody))
+	}
+	if got := gjson.GetBytes(gotBody, "prompt_cache_key").String(); got == "" || strings.Contains(got, "opencode-session") {
+		t.Fatalf("prompt_cache_key = %q, want scoped non-empty key; body=%s", got, gotBody)
 	}
 	if gotObject := gjson.GetBytes(resp.Payload, "object").String(); gotObject != "response" {
 		t.Fatalf("response object = %q, want response; payload=%s", gotObject, string(resp.Payload))
