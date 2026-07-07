@@ -122,6 +122,37 @@ func TestOpenAICompatExecutorClineUnwrapsDataEnvelopeForOpenAIChat(t *testing.T)
 	}
 }
 
+func TestOpenAICompatExecutorClineAddsSessionPromptCacheKey(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"id":"chatcmpl_1","object":"chat.completion","created":1,"model":"cline-pass/qwen3.7-max","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":9,"completion_tokens":5,"total_tokens":14}}}`))
+	}))
+	defer server.Close()
+
+	exec := NewOpenAICompatExecutor("cline", &config.Config{})
+	auth := &cliproxyauth.Auth{ID: "cline:apikey:one", Attributes: map[string]string{
+		"base_url": server.URL + "/api/v1",
+		"api_key":  "test-key",
+	}}
+	_, err := exec.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model:   "cline-pass/qwen3.7-max",
+		Payload: []byte(`{"model":"qwen3.7-max","messages":[{"role":"user","content":"hi"}]}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAI,
+		Metadata: map[string]any{
+			cliproxyexecutor.SessionStickyMetadataKey: "header:x-session-id:cline-session",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if got := gjson.GetBytes(gotBody, "prompt_cache_key").String(); got == "" || strings.Contains(got, "cline-session") {
+		t.Fatalf("prompt_cache_key = %q, want scoped non-empty key; body=%s", got, gotBody)
+	}
+}
+
 func TestOpenAICompatExecutorClineUnwrapsDataEnvelopeForOpenAIChatStream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
