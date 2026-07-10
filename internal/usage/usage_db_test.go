@@ -2024,7 +2024,9 @@ func TestQueryStatsAndHeatmapCountSessionsFromDetails(t *testing.T) {
 		CleanupIntervalMinutes: 1440,
 	})
 
-	today := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	// Keep both samples inside the rolling query window instead of letting a
+	// hard-coded calendar date age out as the test suite advances.
+	today := CutoffStartUTC(1).Add(12 * time.Hour)
 	yesterday := today.AddDate(0, 0, -1)
 	InsertLogWithDetails("sk-heatmap", "Heatmap", "gpt-5.4", "codex", "Codex", "auth-1", false, today, 10, 5, TokenStats{
 		InputTokens: 10, OutputTokens: 20, TotalTokens: 30,
