@@ -29,6 +29,20 @@ func TestPostgresIdentityLifecycle(t *testing.T) {
 	if err = service.Bootstrap(ctx, "bootstrap-password-123"); err != nil {
 		t.Fatal(err)
 	}
+	users, err := service.ListUsers(ctx, SystemTenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 || users[0].ID != SystemUserID || users[0].DisplayName != "Super Administrator" || len(users[0].RoleCodes) != 1 || users[0].RoleCodes[0] != "platform_super_admin" {
+		t.Fatalf("system users=%+v", users)
+	}
+	systemRoles, err := service.ListRoles(ctx, SystemTenantID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(systemRoles) != 1 || systemRoles[0].ID != SystemRoleID || systemRoles[0].Name != "Administrator" || !systemRoles[0].SystemProtected {
+		t.Fatalf("system roles=%+v", systemRoles)
+	}
 	login, err := service.Login(ctx, "admin", "bootstrap-password-123", false, "test")
 	if err != nil {
 		t.Fatal(err)

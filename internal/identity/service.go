@@ -175,8 +175,8 @@ func (s *Service) Bootstrap(ctx context.Context, initialPassword string) error {
 
 	if _, err = tx.ExecContext(ctx, `
 		INSERT INTO roles (id, tenant_id, code, name, description, scope, system_protected)
-		VALUES (?, ?, 'platform_super_admin', 'Platform Super Administrator',
-		        'Built-in role with every platform and tenant permission.', 'platform', true)
+		VALUES (?, ?, 'platform_super_admin', 'Administrator',
+		        'Built-in administrator role with every platform and tenant permission.', 'platform', true)
 		ON CONFLICT (id) DO UPDATE SET
 		  tenant_id = EXCLUDED.tenant_id, code = EXCLUDED.code, name = EXCLUDED.name,
 		  description = EXCLUDED.description, scope = EXCLUDED.scope,
@@ -223,6 +223,9 @@ func (s *Service) Bootstrap(ctx context.Context, initialPassword string) error {
 		`, SystemUserID, SystemTenantID, passwordHash); err != nil {
 			return fmt.Errorf("identity: seed admin: %w", err)
 		}
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE users SET display_name = 'Super Administrator', updated_at = now() WHERE id = ?`, SystemUserID); err != nil {
+		return fmt.Errorf("identity: update admin display name: %w", err)
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO user_roles (user_id, role_id) VALUES (?, ?) ON CONFLICT DO NOTHING`, SystemUserID, SystemRoleID); err != nil {
 		return fmt.Errorf("identity: seed admin role: %w", err)
