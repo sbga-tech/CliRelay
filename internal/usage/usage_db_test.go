@@ -1863,9 +1863,10 @@ func TestQueryAPIKeyDistributionMergesRawAndIDGroupsForSameKey(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{})
 
 	const (
-		stableID = "16332427-2510-48e4-9c42-dcc148008ea0"
-		rawKey   = "sk-bai8v0z1hoytg4wopcyxz9t9t0yvx0zb"
-		name     = "袁蔚"
+		stableID = "stable-dist-merge-1"
+		// Placeholder shape only; must not look like a live secret to secret-scan.
+		rawKey = "sk-test-dist-merge-legacy-raw"
+		name   = "袁蔚"
 	)
 	if err := UpsertAPIKey(APIKeyRow{ID: stableID, Key: rawKey, Name: name}); err != nil {
 		t.Fatalf("UpsertAPIKey: %v", err)
