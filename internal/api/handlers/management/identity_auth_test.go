@@ -1,12 +1,17 @@
 package management
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	postgresstore "github.com/router-for-me/CLIProxyAPI/v6/internal/storage/postgres"
 )
 
 func TestPermissionForManagementRequest(t *testing.T) {
@@ -91,36 +96,120 @@ func TestServiceCredentialCannotAccessTenantGovernance(t *testing.T) {
 	}
 }
 
-// TestLogsDeleteRequiresExplicitPermission mirrors authenticateSessionToken's
-// permission gate: read-only log viewers must not pass DELETE /logs.
-func TestLogsDeleteRequiresExplicitPermission(t *testing.T) {
-	readOnly := identity.Principal{
-		Permissions: map[string]bool{"system.logs.read": true},
+// TestLogsDeleteMiddlewareRequiresExplicitPermission drives real sessions
+// through Handler.Middleware(): read-only DELETE is 403 and never reaches the
+// handler; delete-capable DELETE and read-only GET both enter the handler.
+func TestLogsDeleteMiddlewareRequiresExplicitPermission(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("CLIRELAY_POSTGRES_TEST_DSN"))
+	if dsn == "" {
+		t.Skip("CLIRELAY_POSTGRES_TEST_DSN is not set")
 	}
-	deleter := identity.Principal{
-		Permissions: map[string]bool{
-			"system.logs.read":   true,
-			"system.logs.delete": true,
-		},
+	ctx := context.Background()
+	db, err := postgresstore.OpenRuntimeDB(ctx, config.PostgresConfig{DSN: dsn, MaxOpenConns: 4, MaxIdleConns: 1})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	getPerm := permissionForManagementRequest(http.MethodGet, "/v0/management/logs")
-	deletePerm := permissionForManagementRequest(http.MethodDelete, "/v0/management/logs")
-	if getPerm != "system.logs.read" {
-		t.Fatalf("GET /logs permission = %q, want system.logs.read", getPerm)
-	}
-	if deletePerm != "system.logs.delete" {
-		t.Fatalf("DELETE /logs permission = %q, want system.logs.delete", deletePerm)
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err = db.ExecContext(ctx, `TRUNCATE audit_logs,user_sessions,user_roles,role_permissions,menus,users,roles,permissions,tenants CASCADE`); err != nil {
+		t.Fatal(err)
 	}
 
-	// Same condition as authenticateSessionToken after permission lookup.
-	if getPerm == "" || !readOnly.Has(getPerm) {
-		t.Fatal("read-only principal should pass GET /logs")
+	service := identity.NewService(db)
+	if err = service.Bootstrap(ctx, "bootstrap-password-123"); err != nil {
+		t.Fatal(err)
 	}
-	if deletePerm != "" && readOnly.Has(deletePerm) {
-		t.Fatal("read-only principal must not pass DELETE /logs")
+	// Pin the service on the handler so Middleware does not depend on process-global Default().
+	h := NewHandler(nil, "", nil)
+	h.identityService = service
+	t.Cleanup(h.Close)
+
+	// Platform roles that grant only the log permissions under test. CreateRole
+	// rejects platform-scoped permissions, so seed via SQL like production would
+	// for a custom platform operator role.
+	type logUserFixture struct {
+		username, password, userID, roleID string
+		permissions                        []string
 	}
-	if deletePerm == "" || !deleter.Has(deletePerm) {
-		t.Fatal("principal with system.logs.delete should pass DELETE /logs")
+	seedPlatformLogUser := func(fx logUserFixture) string {
+		t.Helper()
+		hash, hashErr := identity.HashPassword(fx.password)
+		if hashErr != nil {
+			t.Fatal(hashErr)
+		}
+		if _, err = db.ExecContext(ctx, `
+			INSERT INTO roles (id, tenant_id, code, name, description, scope, system_protected)
+			VALUES (?, ?, ?, ?, '', 'platform', false)
+		`, fx.roleID, identity.SystemTenantID, "platform_"+fx.username, fx.username+" role"); err != nil {
+			t.Fatalf("seed role %s: %v", fx.username, err)
+		}
+		for _, perm := range fx.permissions {
+			if _, err = db.ExecContext(ctx, `
+				INSERT INTO role_permissions (role_id, permission_code) VALUES (?, ?)
+			`, fx.roleID, perm); err != nil {
+				t.Fatalf("seed role permission %s: %v", perm, err)
+			}
+		}
+		if _, err = db.ExecContext(ctx, `
+			INSERT INTO users (
+			  id, tenant_id, username, username_normalized, display_name, password_hash,
+			  status, must_change_password, password_changed_at, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, 'active', false, now(), now(), now())
+		`, fx.userID, identity.SystemTenantID, fx.username, fx.username, fx.username, hash); err != nil {
+			t.Fatalf("seed user %s: %v", fx.username, err)
+		}
+		if _, err = db.ExecContext(ctx, `INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`, fx.userID, fx.roleID); err != nil {
+			t.Fatalf("seed user role %s: %v", fx.username, err)
+		}
+		login, loginErr := service.Login(ctx, fx.username, fx.password, false, "middleware-test")
+		if loginErr != nil {
+			t.Fatalf("login %s: %v", fx.username, loginErr)
+		}
+		return login.AccessToken
+	}
+
+	readToken := seedPlatformLogUser(logUserFixture{
+		username:    "log-reader",
+		password:    "reader-password-123",
+		userID:      "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1",
+		roleID:      "cccccccc-cccc-cccc-cccc-ccccccccccc1",
+		permissions: []string{"system.logs.read"},
+	})
+	deleteToken := seedPlatformLogUser(logUserFixture{
+		username:    "log-deleter",
+		password:    "deleter-password-123",
+		userID:      "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2",
+		roleID:      "cccccccc-cccc-cccc-cccc-ccccccccccc2",
+		permissions: []string{"system.logs.read", "system.logs.delete"},
+	})
+
+	serve := func(method, token string) (int, bool) {
+		t.Helper()
+		gin.SetMode(gin.TestMode)
+		router := gin.New()
+		router.Use(h.Middleware())
+		reached := false
+		handler := func(c *gin.Context) {
+			reached = true
+			c.Status(http.StatusOK)
+		}
+		router.GET("/v0/management/logs", handler)
+		router.DELETE("/v0/management/logs", handler)
+
+		req := httptest.NewRequest(method, "/v0/management/logs", nil)
+		req.RemoteAddr = "127.0.0.1:4321"
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec.Code, reached
+	}
+
+	if code, reached := serve(http.MethodDelete, readToken); code != http.StatusForbidden || reached {
+		t.Fatalf("read-only DELETE: status=%d reached=%v, want 403 and handler not executed", code, reached)
+	}
+	if code, reached := serve(http.MethodGet, readToken); code != http.StatusOK || !reached {
+		t.Fatalf("read-only GET: status=%d reached=%v, want 200 and handler executed", code, reached)
+	}
+	if code, reached := serve(http.MethodDelete, deleteToken); code != http.StatusOK || !reached {
+		t.Fatalf("delete-capable DELETE: status=%d reached=%v, want 200 and handler executed", code, reached)
 	}
 }
