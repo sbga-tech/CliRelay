@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/api/bodyutil"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	log "github.com/sirupsen/logrus"
@@ -297,6 +298,68 @@ func (o *ClaudeAuth) RefreshTokens(ctx context.Context, refreshToken string) (*C
 		AccountUUID:  tokenResp.Account.UUID,
 		Expire:       time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}, nil
+}
+
+// ClaudeRefreshOptions constrains a token refresh while preserving ClaudeAuth's
+// Firefox-fingerprinted transport and configured proxy behavior.
+type ClaudeRefreshOptions struct {
+	Endpoint      string
+	Timeout       time.Duration
+	ResponseLimit int64
+}
+
+// RefreshTokensBounded refreshes using the same specialized client as
+// RefreshTokens, with management-safe timeout, redirect, and response bounds.
+func (o *ClaudeAuth) RefreshTokensBounded(ctx context.Context, refreshToken string, options ClaudeRefreshOptions) (*ClaudeTokenData, error) {
+	if o == nil || o.httpClient == nil {
+		return nil, fmt.Errorf("claude oauth client is unavailable")
+	}
+	if strings.TrimSpace(refreshToken) == "" {
+		return nil, fmt.Errorf("refresh token is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	endpoint := strings.TrimSpace(options.Endpoint)
+	if endpoint == "" {
+		endpoint = TokenURL
+	}
+	body, err := json.Marshal(map[string]string{"client_id": ClientID, "grant_type": "refresh_token", "refresh_token": strings.TrimSpace(refreshToken)})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create refresh request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	client := *o.httpClient
+	if options.Timeout > 0 {
+		client.Timeout = options.Timeout
+	}
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("token refresh request failed: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	limit := options.ResponseLimit
+	if limit <= 0 {
+		limit = 64 << 10
+	}
+	responseBody, err := bodyutil.ReadAll(response.Body, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read refresh response: %w", err)
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token refresh failed with status %d: %s", response.StatusCode, string(responseBody))
+	}
+	var tokenResp tokenResponse
+	if err = json.Unmarshal(responseBody, &tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to parse refresh response: %w", err)
+	}
+	return &ClaudeTokenData{AccessToken: tokenResp.AccessToken, RefreshToken: tokenResp.RefreshToken, Email: tokenResp.Account.EmailAddress, Expire: time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339)}, nil
 }
 
 // CreateTokenStorage creates a new ClaudeTokenStorage from auth bundle and user info.

@@ -3,8 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
 	log "github.com/sirupsen/logrus"
@@ -202,34 +202,41 @@ func codexVersionFromUserAgent(ua string) string {
 }
 
 // FetchCodexModels retrieves the live model list for a Codex auth.
-//
-// - OAuth / ChatGPT backend base: GET {base}/models?client_version=... (manifest)
-// - API key with OpenAI-compatible base: GET {base}/v1/models or {base}/models
-//
-// Response body schema evolves with Codex client releases; parsing is intentionally
-// tolerant (id/slug/name fields, data/models/items arrays).
+// It retains the historical cached fallback for runtime callers.
 func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
+	models, err := FetchCodexModelsStrict(ctx, auth, cfg)
+	if err != nil {
+		log.Debugf("codex executor: models discovery failed: %v", err)
+		return fallbackCodexModels()
+	}
+	storeCodexModels(models)
+	return models
+}
+
+// FetchCodexModelsStrict retrieves a Codex catalog without using the process-global
+// runtime model cache. API-key auth defaults to OpenAI's /v1/models endpoint; OAuth
+// with no saved base retains the ChatGPT Codex manifest default.
+func FetchCodexModelsStrict(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) ([]*sdkmodelcatalog.ModelInfo, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	token, baseURL := codexCreds(auth)
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return fallbackCodexModels()
+		return nil, fmt.Errorf("codex models: credentials are required")
 	}
 
 	useAPIKey := auth != nil && auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	baseURL = strings.TrimSpace(baseURL)
 	clientVer := resolveCodexModelsClientVersion(cfg, auth)
 	modelsURL, isManifest := buildCodexModelsURL(baseURL, useAPIKey, clientVer)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
 	if err != nil {
-		return fallbackCodexModels()
+		return nil, fmt.Errorf("create codex models request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
-
 	if isManifest {
 		// Align with Codex CLI manifest probe headers. Version gates the model list.
 		req.Header.Set("Originator", codexOriginator)
@@ -239,39 +246,28 @@ func FetchCodexModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.
 			req.Header.Set("Chatgpt-Account-Id", accountID)
 		}
 	}
-
-	resp, err := newProxyAwareHTTPClient(ctx, cfg, auth, 0).Do(req)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			log.Debugf("codex executor: models request failed: %v", err)
-		}
-		return fallbackCodexModels()
+	if auth != nil {
+		util.ApplyCustomHeadersFromAttrs(req, auth.Attributes)
 	}
-	defer func() {
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("codex executor: close models response body error: %v", errClose)
-		}
-	}()
+	applyStoredHostHeader(req, auth)
 
+	resp, err := newStrictModelDiscoveryHTTPClient(ctx, cfg, auth).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("codex models request: %w", err)
+	}
+	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		log.Debugf("codex executor: models request failed with status %d", resp.StatusCode)
-		return fallbackCodexModels()
+		return nil, fmt.Errorf("codex models request returned status %d", resp.StatusCode)
 	}
-
-	body, err := readUpstreamResponseBody("codex", resp.Body)
+	body, err := readStrictModelDiscoveryResponseBody(resp.Body)
 	if err != nil {
-		log.Debugf("codex executor: models response read failed: %v", err)
-		return fallbackCodexModels()
+		return nil, err
 	}
-
-	models, ok := parseCodexModels(body, time.Now().Unix())
+	models, ok := parseCodexModelsStrict(body, time.Now().Unix())
 	if !ok {
-		log.Debug("codex executor: fetched empty or invalid model list; retaining cached model list")
-		return fallbackCodexModels()
+		return nil, fmt.Errorf("invalid or empty codex models response")
 	}
-	storeCodexModels(models)
-	return models
+	return models, nil
 }
 
 func codexAccountID(auth *cliproxyauth.Auth) string {
@@ -300,19 +296,27 @@ func buildCodexModelsURL(baseURL string, useAPIKey bool, clientVersion string) (
 	}
 	normalized := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if normalized == "" {
+		if useAPIKey {
+			return buildV1ModelsURL("https://api.openai.com"), false
+		}
 		// OAuth default: ChatGPT Codex models manifest.
 		u := defaultCodexModelsManifestBase + "/models?client_version=" + url.QueryEscape(clientVersion)
 		return u, true
 	}
 
 	lower := strings.ToLower(normalized)
+	isChatGPTBase := modelsURLHasExactHostname(normalized, "chatgpt.com")
+	isOpenAIBase := modelsURLHasExactHostname(normalized, "api.openai.com")
+	if useAPIKey {
+		return buildV1ModelsURL(normalized), false
+	}
 	// Already a models endpoint.
 	if strings.HasSuffix(lower, "/models") || strings.Contains(lower, "/models?") {
-		return normalized, strings.Contains(lower, "backend-api/codex") || strings.Contains(lower, "chatgpt.com")
+		return normalized, isChatGPTBase
 	}
 
-	// ChatGPT / Codex backend style base.
-	if strings.Contains(lower, "backend-api/codex") || strings.Contains(lower, "chatgpt.com") {
+	// ChatGPT backend bases expose the versioned Codex manifest.
+	if isChatGPTBase {
 		if !strings.HasSuffix(lower, "/codex") && !strings.Contains(lower, "/codex/") {
 			// e.g. https://chatgpt.com/backend-api
 			if strings.HasSuffix(lower, "/backend-api") {
@@ -322,19 +326,47 @@ func buildCodexModelsURL(baseURL string, useAPIKey bool, clientVersion string) (
 		return normalized + "/models?client_version=" + url.QueryEscape(clientVersion), true
 	}
 
-	// API key / OpenAI-compatible base.
-	if useAPIKey || strings.Contains(lower, "api.openai.com") {
-		if strings.HasSuffix(lower, "/v1") {
-			return normalized + "/models", false
-		}
-		if strings.HasSuffix(lower, "/v1/models") {
-			return normalized, false
-		}
-		return normalized + "/v1/models", false
+	// An OAuth record explicitly targeting OpenAI still uses the compatible endpoint.
+	if isOpenAIBase {
+		return buildV1ModelsURL(normalized), false
 	}
 
-	// Generic: treat as Codex-style base ending with /models.
-	return normalized + "/models", strings.Contains(lower, "codex")
+	// Generic bases use a non-manifest models endpoint.
+	return normalized + "/models", false
+}
+
+func parseCodexModelsStrict(body []byte, now int64) ([]*sdkmodelcatalog.ModelInfo, bool) {
+	var arrayResponse []codexModelPayload
+	if err := json.Unmarshal(body, &arrayResponse); err == nil {
+		return codexModelInfosFromPayloads(arrayResponse, now)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, false
+	}
+	if _, hasError := raw["error"]; hasError {
+		return nil, false
+	}
+
+	entries := make([]codexModelPayload, 0)
+	recognized := false
+	for _, field := range []string{"data", "models", "items"} {
+		value, exists := raw[field]
+		if !exists {
+			continue
+		}
+		recognized = true
+		var group []codexModelPayload
+		if err := json.Unmarshal(value, &group); err != nil {
+			return nil, false
+		}
+		entries = append(entries, group...)
+	}
+	if !recognized || len(entries) == 0 {
+		return nil, false
+	}
+	return codexModelInfosFromPayloads(entries, now)
 }
 
 func parseCodexModels(body []byte, now int64) ([]*sdkmodelcatalog.ModelInfo, bool) {
@@ -359,10 +391,14 @@ func parseCodexModels(body []byte, now int64) ([]*sdkmodelcatalog.ModelInfo, boo
 		return parseCodexModelsLoose(body, now)
 	}
 
+	return codexModelInfosFromPayloads(entries, now)
+}
+
+func codexModelInfosFromPayloads(entries []codexModelPayload, now int64) ([]*sdkmodelcatalog.ModelInfo, bool) {
 	out := make([]*sdkmodelcatalog.ModelInfo, 0, len(entries))
 	seen := make(map[string]struct{}, len(entries))
 	for _, item := range entries {
-		// ChatGPT Codex manifest uses slug as the callable model id; prefer slug over opaque id.
+		// ChatGPT Codex manifest uses slug as the callable model ID; prefer slug over opaque ID.
 		modelID := firstNonEmptyString(item.Slug, item.ID, item.Name)
 		if modelID == "" {
 			continue

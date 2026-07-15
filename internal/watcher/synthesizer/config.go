@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/watcher/diff"
@@ -13,6 +14,360 @@ import (
 // ConfigSynthesizer generates Auth entries from configuration API keys.
 // It handles Gemini, Claude, Bedrock, Codex, OpenCode Go, Cline, Ollama Cloud, OpenAI-compat, and Vertex-compat providers.
 type ConfigSynthesizer struct{}
+
+// ConfigProviderKind identifies a saved provider configuration that can be
+// materialized without registering an auth record.
+type ConfigProviderKind string
+
+const (
+	ConfigProviderKindGemini              ConfigProviderKind = "gemini"
+	ConfigProviderKindClaude              ConfigProviderKind = "claude"
+	ConfigProviderKindCodex               ConfigProviderKind = "codex"
+	ConfigProviderKindVertex              ConfigProviderKind = "vertex"
+	ConfigProviderKindBedrock             ConfigProviderKind = "bedrock"
+	ConfigProviderKindOpenAICompatibility ConfigProviderKind = "openai-compatibility"
+)
+
+// StableIdentity describes the existing deterministic ID and source-label
+// inputs for a config-derived auth. It does not allocate an ID itself.
+type StableIdentity struct {
+	Kind        string
+	Parts       []string
+	SourceLabel string
+}
+
+// BuildConfigProviderAuthSkeleton materializes immutable saved-provider data
+// without assigning a runtime identity or state. The selected OpenAI-compatible
+// provider uses its first non-empty API key entry even when that row is disabled.
+func BuildConfigProviderAuthSkeleton(cfg *config.Config, tenantID string, kind ConfigProviderKind, index int) (*coreauth.Auth, StableIdentity, error) {
+	if cfg == nil {
+		return nil, StableIdentity{}, fmt.Errorf("config is required")
+	}
+	if index < 0 {
+		return nil, StableIdentity{}, fmt.Errorf("provider index must be non-negative")
+	}
+
+	switch kind {
+	case ConfigProviderKindGemini:
+		if index >= len(cfg.GeminiKey) {
+			return nil, StableIdentity{}, fmt.Errorf("provider not found")
+		}
+		entry := cfg.GeminiKey[index]
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		attrs := map[string]string{}
+		if key != "" {
+			attrs["api_key"] = key
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		if base != "" {
+			attrs["base_url"] = base
+		}
+		if hash := diff.ComputeGeminiModelsHash(entry.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		addConfigHeadersToAttrs(entry.Headers, attrs)
+		label := strings.TrimSpace(entry.Name)
+		if label == "" {
+			label = "gemini-apikey"
+		}
+		return &coreauth.Auth{
+				TenantID:   tenantID,
+				Provider:   "gemini",
+				Label:      label,
+				Prefix:     strings.TrimSpace(entry.Prefix),
+				ProxyURL:   strings.TrimSpace(entry.ProxyURL),
+				ProxyID:    strings.TrimSpace(entry.ProxyID),
+				Attributes: attrs,
+			}, StableIdentity{
+				Kind:        "gemini:apikey",
+				Parts:       []string{key, base},
+				SourceLabel: "config:gemini",
+			}, nil
+
+	case ConfigProviderKindClaude:
+		if index >= len(cfg.ClaudeKey) {
+			return nil, StableIdentity{}, fmt.Errorf("provider not found")
+		}
+		entry := cfg.ClaudeKey[index]
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		attrs := map[string]string{}
+		if key != "" {
+			attrs["api_key"] = key
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		if base != "" {
+			attrs["base_url"] = base
+		}
+		if hash := diff.ComputeClaudeModelsHash(entry.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		addConfigHeadersToAttrs(entry.Headers, attrs)
+		if entry.SkipAnthropicProcessing {
+			attrs["skip_anthropic_processing"] = "true"
+		}
+		label := strings.TrimSpace(entry.Name)
+		if label == "" {
+			label = "claude-apikey"
+		}
+		return &coreauth.Auth{
+				TenantID:   tenantID,
+				Provider:   "claude",
+				Label:      label,
+				Prefix:     strings.TrimSpace(entry.Prefix),
+				ProxyURL:   strings.TrimSpace(entry.ProxyURL),
+				ProxyID:    strings.TrimSpace(entry.ProxyID),
+				Attributes: attrs,
+			}, StableIdentity{
+				Kind:        "claude:apikey",
+				Parts:       []string{key, base},
+				SourceLabel: "config:claude",
+			}, nil
+
+	case ConfigProviderKindCodex:
+		if index >= len(cfg.CodexKey) {
+			return nil, StableIdentity{}, fmt.Errorf("provider not found")
+		}
+		entry := cfg.CodexKey[index]
+		key := strings.TrimSpace(entry.APIKey)
+		base := entry.BaseURL
+		attrs := map[string]string{}
+		if key != "" {
+			attrs["api_key"] = key
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		if base != "" {
+			attrs["base_url"] = base
+		}
+		if entry.Websockets {
+			attrs["websockets"] = "true"
+		}
+		if hash := diff.ComputeCodexModelsHash(entry.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		addConfigHeadersToAttrs(entry.Headers, attrs)
+		label := strings.TrimSpace(entry.Name)
+		if label == "" {
+			label = "codex-apikey"
+		}
+		return &coreauth.Auth{
+				TenantID:   tenantID,
+				Provider:   "codex",
+				Label:      label,
+				Prefix:     strings.TrimSpace(entry.Prefix),
+				ProxyURL:   strings.TrimSpace(entry.ProxyURL),
+				ProxyID:    strings.TrimSpace(entry.ProxyID),
+				Attributes: attrs,
+			}, StableIdentity{
+				Kind:        "codex:apikey",
+				Parts:       []string{key, base},
+				SourceLabel: "config:codex",
+			}, nil
+
+	case ConfigProviderKindVertex:
+		if index >= len(cfg.VertexCompatAPIKey) {
+			return nil, StableIdentity{}, fmt.Errorf("provider not found")
+		}
+		entry := cfg.VertexCompatAPIKey[index]
+		key := strings.TrimSpace(entry.APIKey)
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		attrs := map[string]string{
+			"base_url":     base,
+			"provider_key": "vertex",
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		if key != "" {
+			attrs["api_key"] = key
+		}
+		if hash := diff.ComputeVertexCompatModelsHash(entry.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		addConfigHeadersToAttrs(entry.Headers, attrs)
+		return &coreauth.Auth{
+				TenantID:   tenantID,
+				Provider:   "vertex",
+				Label:      "vertex-apikey",
+				Prefix:     strings.TrimSpace(entry.Prefix),
+				ProxyURL:   proxyURL,
+				ProxyID:    strings.TrimSpace(entry.ProxyID),
+				Attributes: attrs,
+			}, StableIdentity{
+				Kind:        "vertex:apikey",
+				Parts:       []string{key, base, proxyURL},
+				SourceLabel: "config:vertex-apikey",
+			}, nil
+
+	case ConfigProviderKindBedrock:
+		if index >= len(cfg.BedrockKey) {
+			return nil, StableIdentity{}, fmt.Errorf("provider not found")
+		}
+		entry := cfg.BedrockKey[index]
+		authMode := strings.ToLower(strings.TrimSpace(entry.AuthMode))
+		switch authMode {
+		case "apikey", "api_key", "api-key":
+			authMode = "api-key"
+		default:
+			authMode = "sigv4"
+		}
+		region := strings.TrimSpace(entry.Region)
+		if region == "" {
+			region = "us-east-1"
+		}
+		base := strings.TrimSpace(entry.BaseURL)
+		proxyURL := strings.TrimSpace(entry.ProxyURL)
+		attrs := map[string]string{
+			"auth_mode": authMode,
+			"region":    region,
+		}
+		identity := StableIdentity{
+			Kind:        "bedrock:apikey",
+			Parts:       []string{authMode, region, base, proxyURL},
+			SourceLabel: "config:bedrock",
+		}
+		switch authMode {
+		case "api-key":
+			if key := strings.TrimSpace(entry.APIKey); key != "" {
+				attrs["api_key"] = key
+				identity.Parts = append(identity.Parts, key)
+			}
+		default:
+			accessKeyID := strings.TrimSpace(entry.AccessKeyID)
+			secretAccessKey := strings.TrimSpace(entry.SecretAccessKey)
+			sessionToken := strings.TrimSpace(entry.SessionToken)
+			if accessKeyID != "" {
+				attrs["api_key"] = accessKeyID
+				attrs["access_key_id"] = accessKeyID
+			}
+			if secretAccessKey != "" {
+				attrs["secret_access_key"] = secretAccessKey
+			}
+			if sessionToken != "" {
+				attrs["session_token"] = sessionToken
+			}
+			identity.Parts = append(identity.Parts, accessKeyID, secretAccessKey, sessionToken)
+		}
+		if entry.Priority != 0 {
+			attrs["priority"] = strconv.Itoa(entry.Priority)
+		}
+		if base != "" {
+			attrs["base_url"] = base
+		}
+		if entry.ForceGlobal {
+			attrs["force_global"] = "true"
+		}
+		if hash := diff.ComputeBedrockModelsHash(entry.Models); hash != "" {
+			attrs["models_hash"] = hash
+		}
+		addConfigHeadersToAttrs(entry.Headers, attrs)
+		label := strings.TrimSpace(entry.Name)
+		if label == "" {
+			label = "bedrock-apikey"
+		}
+		return &coreauth.Auth{
+			TenantID:   tenantID,
+			Provider:   "bedrock",
+			Label:      label,
+			Prefix:     strings.TrimSpace(entry.Prefix),
+			ProxyURL:   proxyURL,
+			ProxyID:    strings.TrimSpace(entry.ProxyID),
+			Attributes: attrs,
+		}, identity, nil
+
+	case ConfigProviderKindOpenAICompatibility:
+		if index >= len(cfg.OpenAICompatibility) {
+			return nil, StableIdentity{}, fmt.Errorf("provider not found")
+		}
+		return buildOpenAICompatibilityAuthSkeleton(cfg, tenantID, index, firstNonEmptyOpenAICompatibilityKey(cfg.OpenAICompatibility[index]))
+	default:
+		return nil, StableIdentity{}, fmt.Errorf("unsupported config provider kind %q", kind)
+	}
+}
+
+func firstNonEmptyOpenAICompatibilityKey(compat config.OpenAICompatibility) *int {
+	for index := range compat.APIKeyEntries {
+		if strings.TrimSpace(compat.APIKeyEntries[index].APIKey) != "" {
+			return &index
+		}
+	}
+	return nil
+}
+
+func buildOpenAICompatibilityAuthSkeleton(cfg *config.Config, tenantID string, providerIndex int, keyIndex *int) (*coreauth.Auth, StableIdentity, error) {
+	if cfg == nil || providerIndex < 0 || providerIndex >= len(cfg.OpenAICompatibility) {
+		return nil, StableIdentity{}, fmt.Errorf("provider not found")
+	}
+	compat := cfg.OpenAICompatibility[providerIndex]
+	if keyIndex != nil && (*keyIndex < 0 || *keyIndex >= len(compat.APIKeyEntries)) {
+		return nil, StableIdentity{}, fmt.Errorf("provider key not found")
+	}
+	providerName := strings.ToLower(strings.TrimSpace(compat.Name))
+	if providerName == "" {
+		providerName = "openai-compatibility"
+	}
+	base := strings.TrimSpace(compat.BaseURL)
+	attrs := map[string]string{
+		"base_url":     base,
+		"compat_name":  compat.Name,
+		"provider_key": providerName,
+	}
+	if compat.Priority != 0 {
+		attrs["priority"] = strconv.Itoa(compat.Priority)
+	}
+	if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
+		attrs["models_hash"] = hash
+	}
+	addConfigHeadersToAttrs(compat.Headers, attrs)
+	identity := StableIdentity{
+		Kind:        fmt.Sprintf("openai-compatibility:%s", providerName),
+		Parts:       []string{base},
+		SourceLabel: fmt.Sprintf("config:%s", providerName),
+	}
+	auth := &coreauth.Auth{
+		TenantID:   tenantID,
+		Provider:   providerName,
+		Label:      compat.Name,
+		Prefix:     strings.TrimSpace(compat.Prefix),
+		Attributes: attrs,
+	}
+	if keyIndex == nil {
+		return auth, identity, nil
+	}
+	entry := compat.APIKeyEntries[*keyIndex]
+	key := strings.TrimSpace(entry.APIKey)
+	proxyURL := strings.TrimSpace(entry.ProxyURL)
+	if key != "" {
+		attrs["api_key"] = key
+	}
+	auth.ProxyURL = proxyURL
+	auth.ProxyID = strings.TrimSpace(entry.ProxyID)
+	identity.Parts = []string{key, base, proxyURL}
+	return auth, identity, nil
+}
+
+func applyConfigProviderAuthSynthesis(auth *coreauth.Auth, identity StableIdentity, now time.Time, idGen *StableIDGenerator) {
+	if auth == nil {
+		return
+	}
+	id, token := idGen.Next(identity.Kind, identity.Parts...)
+	auth.ID = id
+	if auth.Attributes == nil {
+		auth.Attributes = make(map[string]string)
+	}
+	auth.Attributes["source"] = fmt.Sprintf("%s[%s]", identity.SourceLabel, token)
+	auth.Status = coreauth.StatusActive
+	auth.CreatedAt = now
+	auth.UpdatedAt = now
+}
 
 // NewConfigSynthesizer creates a new ConfigSynthesizer instance.
 func NewConfigSynthesizer() *ConfigSynthesizer {
@@ -51,54 +406,20 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 // synthesizeGeminiKeys creates Auth entries for Gemini API keys.
 func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*coreauth.Auth {
 	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
 	out := make([]*coreauth.Auth, 0, len(cfg.GeminiKey))
-	for i := range cfg.GeminiKey {
-		entry := cfg.GeminiKey[i]
-		key := strings.TrimSpace(entry.APIKey)
-		if key == "" {
+	for index := range cfg.GeminiKey {
+		entry := cfg.GeminiKey[index]
+		if strings.TrimSpace(entry.APIKey) == "" {
 			continue
 		}
-		prefix := strings.TrimSpace(entry.Prefix)
-		base := strings.TrimSpace(entry.BaseURL)
-		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		proxyID := strings.TrimSpace(entry.ProxyID)
-		id, token := idGen.Next("gemini:apikey", key, base)
-		attrs := map[string]string{
-			"source":  fmt.Sprintf("config:gemini[%s]", token),
-			"api_key": key,
+		auth, identity, err := BuildConfigProviderAuthSkeleton(cfg, "", ConfigProviderKindGemini, index)
+		if err != nil {
+			continue
 		}
-		if entry.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(entry.Priority)
-		}
-		if base != "" {
-			attrs["base_url"] = base
-		}
-		if hash := diff.ComputeGeminiModelsHash(entry.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		addConfigHeadersToAttrs(entry.Headers, attrs)
-		label := strings.TrimSpace(entry.Name)
-		if label == "" {
-			label = "gemini-apikey"
-		}
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "gemini",
-			Label:      label,
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
-		ApplyDisableAllModelsState(a, entry.ExcludedModels)
-		out = append(out, a)
+		applyConfigProviderAuthSynthesis(auth, identity, ctx.Now, ctx.IDGenerator)
+		ApplyAuthExcludedModelsMeta(auth, cfg, entry.ExcludedModels, "apikey")
+		ApplyDisableAllModelsState(auth, entry.ExcludedModels)
+		out = append(out, auth)
 	}
 	return out
 }
@@ -106,57 +427,20 @@ func (s *ConfigSynthesizer) synthesizeGeminiKeys(ctx *SynthesisContext) []*corea
 // synthesizeClaudeKeys creates Auth entries for Claude API keys.
 func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*coreauth.Auth {
 	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
 	out := make([]*coreauth.Auth, 0, len(cfg.ClaudeKey))
-	for i := range cfg.ClaudeKey {
-		ck := cfg.ClaudeKey[i]
-		key := strings.TrimSpace(ck.APIKey)
-		if key == "" {
+	for index := range cfg.ClaudeKey {
+		entry := cfg.ClaudeKey[index]
+		if strings.TrimSpace(entry.APIKey) == "" {
 			continue
 		}
-		prefix := strings.TrimSpace(ck.Prefix)
-		base := strings.TrimSpace(ck.BaseURL)
-		id, token := idGen.Next("claude:apikey", key, base)
-		attrs := map[string]string{
-			"source":  fmt.Sprintf("config:claude[%s]", token),
-			"api_key": key,
+		auth, identity, err := BuildConfigProviderAuthSkeleton(cfg, "", ConfigProviderKindClaude, index)
+		if err != nil {
+			continue
 		}
-		if ck.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(ck.Priority)
-		}
-		if base != "" {
-			attrs["base_url"] = base
-		}
-		if hash := diff.ComputeClaudeModelsHash(ck.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		addConfigHeadersToAttrs(ck.Headers, attrs)
-		if ck.SkipAnthropicProcessing {
-			attrs["skip_anthropic_processing"] = "true"
-		}
-		proxyURL := strings.TrimSpace(ck.ProxyURL)
-		proxyID := strings.TrimSpace(ck.ProxyID)
-		label := strings.TrimSpace(ck.Name)
-		if label == "" {
-			label = "claude-apikey"
-		}
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "claude",
-			Label:      label,
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
-		ApplyDisableAllModelsState(a, ck.ExcludedModels)
-		out = append(out, a)
+		applyConfigProviderAuthSynthesis(auth, identity, ctx.Now, ctx.IDGenerator)
+		ApplyAuthExcludedModelsMeta(auth, cfg, entry.ExcludedModels, "apikey")
+		ApplyDisableAllModelsState(auth, entry.ExcludedModels)
+		out = append(out, auth)
 	}
 	return out
 }
@@ -164,90 +448,28 @@ func (s *ConfigSynthesizer) synthesizeClaudeKeys(ctx *SynthesisContext) []*corea
 // synthesizeBedrockKeys creates Auth entries for AWS Bedrock Runtime credentials.
 func (s *ConfigSynthesizer) synthesizeBedrockKeys(ctx *SynthesisContext) []*coreauth.Auth {
 	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
 	out := make([]*coreauth.Auth, 0, len(cfg.BedrockKey))
-	for i := range cfg.BedrockKey {
-		entry := cfg.BedrockKey[i]
+	for index := range cfg.BedrockKey {
+		entry := cfg.BedrockKey[index]
 		authMode := strings.ToLower(strings.TrimSpace(entry.AuthMode))
 		switch authMode {
 		case "apikey", "api_key", "api-key":
-			authMode = "api-key"
-		default:
-			authMode = "sigv4"
-		}
-
-		region := strings.TrimSpace(entry.Region)
-		if region == "" {
-			region = "us-east-1"
-		}
-		base := strings.TrimSpace(entry.BaseURL)
-		proxyURL := strings.TrimSpace(entry.ProxyURL)
-		proxyID := strings.TrimSpace(entry.ProxyID)
-		prefix := strings.TrimSpace(entry.Prefix)
-
-		attrs := map[string]string{
-			"auth_mode": authMode,
-			"region":    region,
-		}
-		idParts := []string{authMode, region, base, proxyURL}
-		switch authMode {
-		case "api-key":
-			key := strings.TrimSpace(entry.APIKey)
-			if key == "" {
+			if strings.TrimSpace(entry.APIKey) == "" {
 				continue
 			}
-			attrs["api_key"] = key
-			idParts = append(idParts, key)
 		default:
-			accessKeyID := strings.TrimSpace(entry.AccessKeyID)
-			secretAccessKey := strings.TrimSpace(entry.SecretAccessKey)
-			if accessKeyID == "" || secretAccessKey == "" {
+			if strings.TrimSpace(entry.AccessKeyID) == "" || strings.TrimSpace(entry.SecretAccessKey) == "" {
 				continue
 			}
-			attrs["api_key"] = accessKeyID
-			attrs["access_key_id"] = accessKeyID
-			attrs["secret_access_key"] = secretAccessKey
-			if sessionToken := strings.TrimSpace(entry.SessionToken); sessionToken != "" {
-				attrs["session_token"] = sessionToken
-			}
-			idParts = append(idParts, accessKeyID, secretAccessKey, strings.TrimSpace(entry.SessionToken))
 		}
-		if entry.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(entry.Priority)
+		auth, identity, err := BuildConfigProviderAuthSkeleton(cfg, "", ConfigProviderKindBedrock, index)
+		if err != nil {
+			continue
 		}
-		if base != "" {
-			attrs["base_url"] = base
-		}
-		if entry.ForceGlobal {
-			attrs["force_global"] = "true"
-		}
-		if hash := diff.ComputeBedrockModelsHash(entry.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		addConfigHeadersToAttrs(entry.Headers, attrs)
-		id, token := idGen.Next("bedrock:apikey", idParts...)
-		attrs["source"] = fmt.Sprintf("config:bedrock[%s]", token)
-		label := strings.TrimSpace(entry.Name)
-		if label == "" {
-			label = "bedrock-apikey"
-		}
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "bedrock",
-			Label:      label,
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, cfg, entry.ExcludedModels, "apikey")
-		ApplyDisableAllModelsState(a, entry.ExcludedModels)
-		out = append(out, a)
+		applyConfigProviderAuthSynthesis(auth, identity, ctx.Now, ctx.IDGenerator)
+		ApplyAuthExcludedModelsMeta(auth, cfg, entry.ExcludedModels, "apikey")
+		ApplyDisableAllModelsState(auth, entry.ExcludedModels)
+		out = append(out, auth)
 	}
 	return out
 }
@@ -255,56 +477,20 @@ func (s *ConfigSynthesizer) synthesizeBedrockKeys(ctx *SynthesisContext) []*core
 // synthesizeCodexKeys creates Auth entries for Codex API keys.
 func (s *ConfigSynthesizer) synthesizeCodexKeys(ctx *SynthesisContext) []*coreauth.Auth {
 	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
 	out := make([]*coreauth.Auth, 0, len(cfg.CodexKey))
-	for i := range cfg.CodexKey {
-		ck := cfg.CodexKey[i]
-		key := strings.TrimSpace(ck.APIKey)
-		if key == "" {
+	for index := range cfg.CodexKey {
+		entry := cfg.CodexKey[index]
+		if strings.TrimSpace(entry.APIKey) == "" {
 			continue
 		}
-		prefix := strings.TrimSpace(ck.Prefix)
-		id, token := idGen.Next("codex:apikey", key, ck.BaseURL)
-		attrs := map[string]string{
-			"source":  fmt.Sprintf("config:codex[%s]", token),
-			"api_key": key,
+		auth, identity, err := BuildConfigProviderAuthSkeleton(cfg, "", ConfigProviderKindCodex, index)
+		if err != nil {
+			continue
 		}
-		if ck.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(ck.Priority)
-		}
-		if ck.BaseURL != "" {
-			attrs["base_url"] = ck.BaseURL
-		}
-		if ck.Websockets {
-			attrs["websockets"] = "true"
-		}
-		if hash := diff.ComputeCodexModelsHash(ck.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		addConfigHeadersToAttrs(ck.Headers, attrs)
-		proxyURL := strings.TrimSpace(ck.ProxyURL)
-		proxyID := strings.TrimSpace(ck.ProxyID)
-		label := strings.TrimSpace(ck.Name)
-		if label == "" {
-			label = "codex-apikey"
-		}
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   "codex",
-			Label:      label,
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, cfg, ck.ExcludedModels, "apikey")
-		ApplyDisableAllModelsState(a, ck.ExcludedModels)
-		out = append(out, a)
+		applyConfigProviderAuthSynthesis(auth, identity, ctx.Now, ctx.IDGenerator)
+		ApplyAuthExcludedModelsMeta(auth, cfg, entry.ExcludedModels, "apikey")
+		ApplyDisableAllModelsState(auth, entry.ExcludedModels)
+		out = append(out, auth)
 	}
 	return out
 }
@@ -490,92 +676,32 @@ func (s *ConfigSynthesizer) synthesizeOllamaCloudKeys(ctx *SynthesisContext) []*
 // synthesizeOpenAICompat creates Auth entries for OpenAI-compatible providers.
 func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*coreauth.Auth {
 	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
 	out := make([]*coreauth.Auth, 0)
-	for i := range cfg.OpenAICompatibility {
-		compat := &cfg.OpenAICompatibility[i]
+	for providerIndex := range cfg.OpenAICompatibility {
+		compat := cfg.OpenAICompatibility[providerIndex]
 		if compat.Disabled {
 			continue
 		}
-		prefix := strings.TrimSpace(compat.Prefix)
-		providerName := strings.ToLower(strings.TrimSpace(compat.Name))
-		if providerName == "" {
-			providerName = "openai-compatibility"
-		}
-		base := strings.TrimSpace(compat.BaseURL)
-
-		// Handle new APIKeyEntries format (preferred)
-		hasAPIKeyEntries := len(compat.APIKeyEntries) > 0
-		for j := range compat.APIKeyEntries {
-			entry := &compat.APIKeyEntries[j]
-			if entry.Disabled {
+		if len(compat.APIKeyEntries) == 0 {
+			auth, identity, err := buildOpenAICompatibilityAuthSkeleton(cfg, "", providerIndex, nil)
+			if err != nil {
 				continue
 			}
-			key := strings.TrimSpace(entry.APIKey)
-			proxyURL := strings.TrimSpace(entry.ProxyURL)
-			proxyID := strings.TrimSpace(entry.ProxyID)
-			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
-			id, token := idGen.Next(idKind, key, base, proxyURL)
-			attrs := map[string]string{
-				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
-				"base_url":     base,
-				"compat_name":  compat.Name,
-				"provider_key": providerName,
-			}
-			if compat.Priority != 0 {
-				attrs["priority"] = strconv.Itoa(compat.Priority)
-			}
-			if key != "" {
-				attrs["api_key"] = key
-			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
-				attrs["models_hash"] = hash
-			}
-			addConfigHeadersToAttrs(compat.Headers, attrs)
-			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   providerName,
-				Label:      compat.Name,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				ProxyURL:   proxyURL,
-				ProxyID:    proxyID,
-				Attributes: attrs,
-				CreatedAt:  now,
-				UpdatedAt:  now,
-			}
-			out = append(out, a)
+			applyConfigProviderAuthSynthesis(auth, identity, ctx.Now, ctx.IDGenerator)
+			out = append(out, auth)
+			continue
 		}
-		// Fallback: create entry without API key if no APIKeyEntries
-		if !hasAPIKeyEntries {
-			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
-			id, token := idGen.Next(idKind, base)
-			attrs := map[string]string{
-				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
-				"base_url":     base,
-				"compat_name":  compat.Name,
-				"provider_key": providerName,
+		for keyIndex := range compat.APIKeyEntries {
+			if compat.APIKeyEntries[keyIndex].Disabled {
+				continue
 			}
-			if compat.Priority != 0 {
-				attrs["priority"] = strconv.Itoa(compat.Priority)
+			selectedKeyIndex := keyIndex
+			auth, identity, err := buildOpenAICompatibilityAuthSkeleton(cfg, "", providerIndex, &selectedKeyIndex)
+			if err != nil {
+				continue
 			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
-				attrs["models_hash"] = hash
-			}
-			addConfigHeadersToAttrs(compat.Headers, attrs)
-			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   providerName,
-				Label:      compat.Name,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				Attributes: attrs,
-				CreatedAt:  now,
-				UpdatedAt:  now,
-			}
-			out = append(out, a)
+			applyConfigProviderAuthSynthesis(auth, identity, ctx.Now, ctx.IDGenerator)
+			out = append(out, auth)
 		}
 	}
 	return out
@@ -584,50 +710,15 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 // synthesizeVertexCompat creates Auth entries for Vertex-compatible providers.
 func (s *ConfigSynthesizer) synthesizeVertexCompat(ctx *SynthesisContext) []*coreauth.Auth {
 	cfg := ctx.Config
-	now := ctx.Now
-	idGen := ctx.IDGenerator
-
 	out := make([]*coreauth.Auth, 0, len(cfg.VertexCompatAPIKey))
-	for i := range cfg.VertexCompatAPIKey {
-		compat := &cfg.VertexCompatAPIKey[i]
-		providerName := "vertex"
-		base := strings.TrimSpace(compat.BaseURL)
-
-		key := strings.TrimSpace(compat.APIKey)
-		prefix := strings.TrimSpace(compat.Prefix)
-		proxyURL := strings.TrimSpace(compat.ProxyURL)
-		proxyID := strings.TrimSpace(compat.ProxyID)
-		idKind := "vertex:apikey"
-		id, token := idGen.Next(idKind, key, base, proxyURL)
-		attrs := map[string]string{
-			"source":       fmt.Sprintf("config:vertex-apikey[%s]", token),
-			"base_url":     base,
-			"provider_key": providerName,
+	for index := range cfg.VertexCompatAPIKey {
+		auth, identity, err := BuildConfigProviderAuthSkeleton(cfg, "", ConfigProviderKindVertex, index)
+		if err != nil {
+			continue
 		}
-		if compat.Priority != 0 {
-			attrs["priority"] = strconv.Itoa(compat.Priority)
-		}
-		if key != "" {
-			attrs["api_key"] = key
-		}
-		if hash := diff.ComputeVertexCompatModelsHash(compat.Models); hash != "" {
-			attrs["models_hash"] = hash
-		}
-		addConfigHeadersToAttrs(compat.Headers, attrs)
-		a := &coreauth.Auth{
-			ID:         id,
-			Provider:   providerName,
-			Label:      "vertex-apikey",
-			Prefix:     prefix,
-			Status:     coreauth.StatusActive,
-			ProxyURL:   proxyURL,
-			ProxyID:    proxyID,
-			Attributes: attrs,
-			CreatedAt:  now,
-			UpdatedAt:  now,
-		}
-		ApplyAuthExcludedModelsMeta(a, cfg, nil, "apikey")
-		out = append(out, a)
+		applyConfigProviderAuthSynthesis(auth, identity, ctx.Now, ctx.IDGenerator)
+		ApplyAuthExcludedModelsMeta(auth, cfg, nil, "apikey")
+		out = append(out, auth)
 	}
 	return out
 }

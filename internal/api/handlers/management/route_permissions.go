@@ -115,6 +115,17 @@ func permissionForManagementRequest(method, path string) string {
 			return "api_keys.write"
 		}
 		return "api_keys.read"
+	// Saved-provider checks and model discovery construct all upstream requests
+	// from the selected tenant configuration, so they share providers.test.
+	case (method == http.MethodPost && (relative == "/gemini-api-key/check" ||
+		relative == "/claude-api-key/check" ||
+		relative == "/codex-api-key/check" ||
+		relative == "/vertex-api-key/check" ||
+		relative == "/bedrock-api-key/check")) ||
+		(method == http.MethodGet && (relative == "/claude-api-key/models" ||
+			relative == "/codex-api-key/models" ||
+			relative == "/openai-compatibility/models")):
+		return "providers.test"
 	case strings.HasPrefix(relative, "/model"), strings.Contains(relative, "model-"):
 		if write {
 			return "models.write"
@@ -191,8 +202,6 @@ func permissionForManagementRequest(method, path string) string {
 			return "providers.write"
 		}
 		return "providers.read"
-	case strings.HasPrefix(relative, "/api-call"):
-		return "providers.test"
 	default:
 		// Fail closed: unmapped routes get no permission (middleware rejects "").
 		return ""

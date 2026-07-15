@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 )
 
 // Quota exceeded toggles
@@ -203,6 +204,31 @@ func (h *Handler) PostAuthFileQuotaSnapshot(c *gin.Context) {
 	}
 	h.clearTrendCache()
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+func (h *Handler) authByIndexForTenant(tenantID, authIndex string) *coreauth.Auth {
+	if h == nil || h.authManager == nil {
+		return nil
+	}
+	authIndex = strings.TrimSpace(authIndex)
+	if authIndex == "" {
+		return nil
+	}
+	for _, auth := range h.authManager.ListForTenant(tenantID) {
+		if auth != nil && auth.Index == authIndex {
+			return auth
+		}
+	}
+	return nil
+}
+
+func firstNonEmptyString(values ...*string) string {
+	for _, value := range values {
+		if value != nil && strings.TrimSpace(*value) != "" {
+			return strings.TrimSpace(*value)
+		}
+	}
+	return ""
 }
 
 func firstNonEmptyValue(values ...string) string {

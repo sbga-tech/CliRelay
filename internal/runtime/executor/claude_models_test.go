@@ -2,11 +2,14 @@ package executor
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	sdkexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdkmodelcatalog "github.com/router-for-me/CLIProxyAPI/v6/sdk/modelcatalog"
 )
 
@@ -51,11 +54,45 @@ func TestBuildClaudeModelsURL(t *testing.T) {
 		{"https://api.anthropic.com/v1", "https://api.anthropic.com/v1/models"},
 		{"https://gateway.example/v1/models", "https://gateway.example/v1/models"},
 		{"https://gateway.example/proxy", "https://gateway.example/proxy/v1/models"},
+		{"https://gateway.example/v1?api-version=1#fragment", "https://gateway.example/v1/models?api-version=1"},
+		{"https://gateway.example/proxy/models?api-version=1#fragment", "https://gateway.example/proxy/v1/models?api-version=1"},
 	}
 	for _, tc := range cases {
 		if got := buildClaudeModelsURL(tc.in); got != tc.want {
 			t.Fatalf("buildClaudeModelsURL(%q)=%q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestFetchClaudeModelsStrictTreatsLookalikeAnthropicHostAsCustomGateway(t *testing.T) {
+	ctx := sdkexecutor.WithRoundTripper(context.Background(), roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.URL.String(); got != "https://api.anthropic.com.evil/v1/models?ignored=1" {
+			t.Fatalf("URL=%q", got)
+		}
+		if got := req.Host; got != "saved.example.test" {
+			t.Fatalf("Host=%q", got)
+		}
+		if got := req.Header.Get("x-api-key"); got != "sk-test" {
+			t.Fatalf("x-api-key=%q", got)
+		}
+		if got := req.Header.Get("Authorization"); got != "Bearer sk-test" {
+			t.Fatalf("Authorization=%q", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"data":[{"id":"claude-custom"}]}`)),
+			Request:    req,
+		}, nil
+	}))
+
+	models, err := FetchClaudeModelsStrict(ctx, &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":     "sk-test",
+		"base_url":    "https://api.anthropic.com.evil/v1?ignored=1#fragment",
+		"header:Host": "saved.example.test",
+	}}, nil)
+	if err != nil || len(models) != 1 || models[0].ID != "claude-custom" {
+		t.Fatalf("models=%v err=%v", models, err)
 	}
 }
 
@@ -133,6 +170,62 @@ func TestFetchClaudeModelsOAuthBearer(t *testing.T) {
 		},
 	}, nil)
 	if len(models) != 1 || models[0].ID != "claude-oauth-1" {
+		t.Fatalf("models=%v", models)
+	}
+}
+
+func TestFetchClaudeModelsStrictBypassesRuntimeCache(t *testing.T) {
+	resetClaudeModelsCacheForTest()
+	t.Cleanup(resetClaudeModelsCacheForTest)
+	if ok := storeClaudeModels([]*sdkmodelcatalog.ModelInfo{{ID: "cached-claude"}}); !ok {
+		t.Fatal("cache seed failed")
+	}
+
+	models, err := FetchClaudeModelsStrict(context.Background(), &cliproxyauth.Auth{Provider: "claude"}, nil)
+	if err == nil {
+		t.Fatal("expected missing credential error")
+	}
+	if len(models) != 0 {
+		t.Fatalf("strict models=%v, must not return cache", models)
+	}
+
+	resetClaudeModelsCacheForTest()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"id":"strict-live-claude"}]}`))
+	}))
+	defer srv.Close()
+	models, err = FetchClaudeModelsStrict(context.Background(), &cliproxyauth.Auth{
+		Provider: "claude",
+		Attributes: map[string]string{
+			"api_key":  "sk-ant-test",
+			"base_url": srv.URL,
+		},
+	}, nil)
+	if err != nil || len(models) != 1 || models[0].ID != "strict-live-claude" {
+		t.Fatalf("strict models=%v err=%v", models, err)
+	}
+	if cached := loadClaudeModels(); len(cached) != 0 {
+		t.Fatalf("strict fetch populated runtime cache: %v", cached)
+	}
+}
+
+func TestFetchClaudeModelsStrictRejectsOversizedResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(make([]byte, strictModelDiscoveryResponseBodyLimit+1))
+	}))
+	defer srv.Close()
+
+	models, err := FetchClaudeModelsStrict(context.Background(), &cliproxyauth.Auth{
+		Provider: "claude",
+		Attributes: map[string]string{
+			"api_key":  "sk-ant-test",
+			"base_url": srv.URL,
+		},
+	}, nil)
+	if err == nil {
+		t.Fatal("expected oversized response error")
+	}
+	if len(models) != 0 {
 		t.Fatalf("models=%v", models)
 	}
 }

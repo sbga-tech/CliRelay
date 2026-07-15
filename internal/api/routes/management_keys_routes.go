@@ -24,6 +24,7 @@ func registerManagementAPIKeyRoutes(group *gin.RouterGroup, h *managementhandler
 	group.PUT("/gemini-api-key", keys.PutGeminiKeys)
 	group.PATCH("/gemini-api-key", keys.PatchGeminiKey)
 	group.DELETE("/gemini-api-key", keys.DeleteGeminiKey)
+	group.POST("/gemini-api-key/check", h.CheckGeminiProvider)
 }
 
 func registerManagementProviderRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {
@@ -32,11 +33,14 @@ func registerManagementProviderRoutes(group *gin.RouterGroup, h *managementhandl
 	group.PUT("/claude-api-key", keys.PutClaudeKeys)
 	group.PATCH("/claude-api-key", keys.PatchClaudeKey)
 	group.DELETE("/claude-api-key", keys.DeleteClaudeKey)
+	group.POST("/claude-api-key/check", h.CheckClaudeProvider)
+	group.GET("/claude-api-key/models", h.DiscoverClaudeProviderModels)
 
 	group.GET("/bedrock-api-key", keys.GetBedrockKeys)
 	group.PUT("/bedrock-api-key", keys.PutBedrockKeys)
 	group.PATCH("/bedrock-api-key", keys.PatchBedrockKey)
 	group.DELETE("/bedrock-api-key", keys.DeleteBedrockKey)
+	group.POST("/bedrock-api-key/check", h.CheckBedrockProvider)
 
 	group.GET("/opencode-go-api-key", keys.GetOpenCodeGoKeys)
 	group.PUT("/opencode-go-api-key", keys.PutOpenCodeGoKeys)
@@ -60,16 +64,20 @@ func registerManagementProviderRoutes(group *gin.RouterGroup, h *managementhandl
 	group.PUT("/codex-api-key", keys.PutCodexKeys)
 	group.PATCH("/codex-api-key", keys.PatchCodexKey)
 	group.DELETE("/codex-api-key", keys.DeleteCodexKey)
+	group.POST("/codex-api-key/check", h.CheckCodexProvider)
+	group.GET("/codex-api-key/models", h.DiscoverCodexProviderModels)
 
 	group.GET("/openai-compatibility", keys.GetOpenAICompat)
 	group.PUT("/openai-compatibility", keys.PutOpenAICompat)
 	group.PATCH("/openai-compatibility", keys.PatchOpenAICompat)
 	group.DELETE("/openai-compatibility", keys.DeleteOpenAICompat)
+	group.GET("/openai-compatibility/models", h.DiscoverOpenAICompatibilityModels)
 
 	group.GET("/vertex-api-key", keys.GetVertexCompatKeys)
 	group.PUT("/vertex-api-key", keys.PutVertexCompatKeys)
 	group.PATCH("/vertex-api-key", keys.PatchVertexCompatKey)
 	group.DELETE("/vertex-api-key", keys.DeleteVertexCompatKey)
+	group.POST("/vertex-api-key/check", h.CheckVertexProvider)
 
 	group.GET("/oauth-excluded-models", keys.GetOAuthExcludedModels)
 	group.PUT("/oauth-excluded-models", keys.PutOAuthExcludedModels)

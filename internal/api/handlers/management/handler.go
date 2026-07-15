@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/identity"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/management/authfilequota"
 	imagegeneration "github.com/router-for-me/CLIProxyAPI/v6/internal/management/imagegeneration"
 	settingsstore "github.com/router-for-me/CLIProxyAPI/v6/internal/management/settings/store"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/usage"
@@ -41,29 +42,30 @@ const attemptMaxIdleTime = 2 * time.Hour
 
 // Handler aggregates config reference, persistence path and helpers.
 type Handler struct {
-	cfg                  *config.Config
-	configFilePath       string
-	mu                   sync.Mutex
-	attemptsMu           sync.Mutex
-	failedAttempts       map[string]*attemptInfo // keyed by client IP
-	authManager          *coreauth.Manager
-	usageStats           *usage.RequestStatistics
-	tokenStore           coreauth.Store
-	localPassword        string
-	allowRemoteOverride  bool
-	envSecret            string
-	logDir               string
-	postAuthHook         coreauth.PostAuthHook
-	onConfigMutated      func(*config.Config)
-	onModelConfigMutated func()
-	startTime            time.Time
-	attemptCleanupStop   chan struct{}
-	attemptCleanupOnce   sync.Once
-	accessManager        *sdkaccess.Manager
-	trendCacheMu         sync.Mutex
-	trendCache           map[string]trendCacheEntry
-	imageGeneration      *imagegeneration.Service
-	identityService      *identity.Service
+	cfg                       *config.Config
+	configFilePath            string
+	mu                        sync.Mutex
+	attemptsMu                sync.Mutex
+	failedAttempts            map[string]*attemptInfo // keyed by client IP
+	authManager               *coreauth.Manager
+	authFileQuotaDependencies authfilequota.Dependencies
+	usageStats                *usage.RequestStatistics
+	tokenStore                coreauth.Store
+	localPassword             string
+	allowRemoteOverride       bool
+	envSecret                 string
+	logDir                    string
+	postAuthHook              coreauth.PostAuthHook
+	onConfigMutated           func(*config.Config)
+	onModelConfigMutated      func()
+	startTime                 time.Time
+	attemptCleanupStop        chan struct{}
+	attemptCleanupOnce        sync.Once
+	accessManager             *sdkaccess.Manager
+	trendCacheMu              sync.Mutex
+	trendCache                map[string]trendCacheEntry
+	imageGeneration           *imagegeneration.Service
+	identityService           *identity.Service
 }
 
 type trendCacheEntry struct {

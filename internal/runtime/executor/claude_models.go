@@ -3,8 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -95,90 +94,78 @@ func fallbackClaudeModels() []*sdkmodelcatalog.ModelInfo {
 }
 
 // FetchClaudeModels retrieves the live model list from Anthropic-compatible /v1/models.
-// Supports OAuth (Bearer access_token) and API key (x-api-key) auth, matching request
-// credential resolution used by Claude message forwarding.
+// It retains the historical cached fallback for runtime callers.
 func FetchClaudeModels(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) []*sdkmodelcatalog.ModelInfo {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	token, baseURL := claudeCreds(auth)
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return fallbackClaudeModels()
-	}
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if baseURL == "" {
-		baseURL = defaultClaudeModelsBase
-	}
-	modelsURL := buildClaudeModelsURL(baseURL)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	models, err := FetchClaudeModelsStrict(ctx, auth, cfg)
 	if err != nil {
-		return fallbackClaudeModels()
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("anthropic-version", defaultClaudeAnthropicVer)
-
-	useAPIKey := auth != nil && auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""
-	isAnthropicBase := strings.Contains(strings.ToLower(baseURL), "api.anthropic.com")
-	if isAnthropicBase && useAPIKey {
-		req.Header.Set("x-api-key", token)
-	} else if useAPIKey {
-		// Custom Anthropic-compatible gateways usually accept x-api-key for API keys.
-		req.Header.Set("x-api-key", token)
-		req.Header.Set("Authorization", "Bearer "+token)
-	} else {
-		// OAuth / setup-token style: Bearer access_token + oauth beta, aligned with sub2api.
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("anthropic-beta", "oauth-2025-04-20")
-	}
-	if auth != nil {
-		util.ApplyCustomHeadersFromAttrs(req, auth.Attributes)
-	}
-
-	resp, err := newProxyAwareHTTPClient(ctx, cfg, auth, 0).Do(req)
-	if err != nil {
-		if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			log.Debugf("claude executor: models request failed: %v", err)
-		}
-		return fallbackClaudeModels()
-	}
-	defer func() {
-		if errClose := resp.Body.Close(); errClose != nil {
-			log.Errorf("claude executor: close models response body error: %v", errClose)
-		}
-	}()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		log.Debugf("claude executor: models request failed with status %d", resp.StatusCode)
-		return fallbackClaudeModels()
-	}
-
-	body, err := readUpstreamResponseBody("claude", resp.Body)
-	if err != nil {
-		log.Debugf("claude executor: models response read failed: %v", err)
-		return fallbackClaudeModels()
-	}
-
-	models, ok := parseClaudeModels(body, time.Now().Unix())
-	if !ok {
-		log.Debug("claude executor: fetched empty or invalid model list; retaining cached model list")
+		log.Debugf("claude executor: models discovery failed: %v", err)
 		return fallbackClaudeModels()
 	}
 	storeClaudeModels(models)
 	return models
 }
 
+// FetchClaudeModelsStrict retrieves an Anthropic-compatible catalog without using
+// the process-global runtime model cache.
+func FetchClaudeModelsStrict(ctx context.Context, auth *cliproxyauth.Auth, cfg *config.Config) ([]*sdkmodelcatalog.ModelInfo, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	token, baseURL := claudeCreds(auth)
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, fmt.Errorf("claude models: credentials are required")
+	}
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		baseURL = defaultClaudeModelsBase
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, buildClaudeModelsURL(baseURL), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create claude models request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("anthropic-version", defaultClaudeAnthropicVer)
+
+	useAPIKey := auth != nil && auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""
+	isAnthropicBase := modelsURLHasExactHostname(baseURL, "api.anthropic.com")
+	if isAnthropicBase && useAPIKey {
+		req.Header.Set("x-api-key", token)
+	} else if useAPIKey {
+		// Custom Anthropic-compatible gateways commonly accept both forms.
+		req.Header.Set("x-api-key", token)
+		req.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	}
+	if auth != nil {
+		util.ApplyCustomHeadersFromAttrs(req, auth.Attributes)
+	}
+	applyStoredHostHeader(req, auth)
+
+	resp, err := newStrictModelDiscoveryHTTPClient(ctx, cfg, auth).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("claude models request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("claude models request returned status %d", resp.StatusCode)
+	}
+	body, err := readStrictModelDiscoveryResponseBody(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	models, ok := parseClaudeModels(body, time.Now().Unix())
+	if !ok {
+		return nil, fmt.Errorf("invalid or empty claude models response")
+	}
+	return models, nil
+}
+
 func buildClaudeModelsURL(base string) string {
-	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
-	if strings.HasSuffix(strings.ToLower(normalized), "/v1/models") {
-		return normalized
-	}
-	if strings.HasSuffix(strings.ToLower(normalized), "/v1") {
-		return normalized + "/models"
-	}
-	return normalized + claudeModelsPath
+	return buildV1ModelsURL(base)
 }
 
 func parseClaudeModels(body []byte, now int64) ([]*sdkmodelcatalog.ModelInfo, bool) {

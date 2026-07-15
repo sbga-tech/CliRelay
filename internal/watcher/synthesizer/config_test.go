@@ -963,3 +963,190 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildConfigProviderAuthSkeleton(t *testing.T) {
+	cfg := &config.Config{
+		GeminiKey: []config.GeminiKey{
+			{APIKey: "duplicate", BaseURL: "https://gemini-one.example", ProxyID: "one"},
+			{APIKey: "duplicate", BaseURL: "https://gemini-two.example", ProxyID: "two"},
+		},
+		ClaudeKey: []config.ClaudeKey{{
+			APIKey:                  "claude-key",
+			BaseURL:                 "https://claude.example",
+			Headers:                 map[string]string{"X-Claude": "header"},
+			SkipAnthropicProcessing: true,
+		}},
+		CodexKey: []config.CodexKey{{
+			APIKey:     "codex-key",
+			BaseURL:    " https://codex.example ",
+			Websockets: true,
+		}},
+		VertexCompatAPIKey: []config.VertexCompatKey{{
+			APIKey:  "vertex-key",
+			BaseURL: "https://vertex.example",
+			Headers: map[string]string{"X-Vertex": "header"},
+		}},
+		BedrockKey: []config.BedrockKey{{
+			AuthMode:        "sigv4",
+			AccessKeyID:     "ACCESS",
+			SecretAccessKey: "SECRET",
+			SessionToken:    "SESSION",
+			Region:          "eu-west-1",
+			ForceGlobal:     true,
+			BaseURL:         "https://bedrock.example",
+		}},
+		OpenAICompatibility: []config.OpenAICompatibility{{
+			Name:     "Disabled Saved Provider",
+			Disabled: true,
+			BaseURL:  "https://compat.example",
+			APIKeyEntries: []config.OpenAICompatibilityAPIKey{
+				{APIKey: "   ", ProxyID: "blank"},
+				{APIKey: "first-key", Disabled: true, ProxyURL: "http://first.proxy", ProxyID: "first"},
+				{APIKey: "second-key", ProxyURL: "http://second.proxy", ProxyID: "second"},
+			},
+		}},
+	}
+
+	tests := []struct {
+		name          string
+		kind          ConfigProviderKind
+		index         int
+		provider      string
+		identityKind  string
+		sourceLabel   string
+		identityParts []string
+		attributes    map[string]string
+		proxyURL      string
+		proxyID       string
+	}{
+		{
+			name:          "duplicate Gemini uses selected index",
+			kind:          ConfigProviderKindGemini,
+			index:         1,
+			provider:      "gemini",
+			identityKind:  "gemini:apikey",
+			sourceLabel:   "config:gemini",
+			identityParts: []string{"duplicate", "https://gemini-two.example"},
+			attributes: map[string]string{
+				"api_key":  "duplicate",
+				"base_url": "https://gemini-two.example",
+			},
+			proxyID: "two",
+		},
+		{
+			name:          "Claude preserves headers and processing flag",
+			kind:          ConfigProviderKindClaude,
+			provider:      "claude",
+			identityKind:  "claude:apikey",
+			sourceLabel:   "config:claude",
+			identityParts: []string{"claude-key", "https://claude.example"},
+			attributes: map[string]string{
+				"api_key":                   "claude-key",
+				"header:X-Claude":           "header",
+				"skip_anthropic_processing": "true",
+			},
+		},
+		{
+			name:          "Codex preserves stored base URL",
+			kind:          ConfigProviderKindCodex,
+			provider:      "codex",
+			identityKind:  "codex:apikey",
+			sourceLabel:   "config:codex",
+			identityParts: []string{"codex-key", " https://codex.example "},
+			attributes: map[string]string{
+				"api_key":    "codex-key",
+				"base_url":   " https://codex.example ",
+				"websockets": "true",
+			},
+		},
+		{
+			name:          "Vertex preserves provider alias",
+			kind:          ConfigProviderKindVertex,
+			provider:      "vertex",
+			identityKind:  "vertex:apikey",
+			sourceLabel:   "config:vertex-apikey",
+			identityParts: []string{"vertex-key", "https://vertex.example", ""},
+			attributes: map[string]string{
+				"api_key":         "vertex-key",
+				"base_url":        "https://vertex.example",
+				"provider_key":    "vertex",
+				"header:X-Vertex": "header",
+			},
+		},
+		{
+			name:          "Bedrock preserves signing fields",
+			kind:          ConfigProviderKindBedrock,
+			provider:      "bedrock",
+			identityKind:  "bedrock:apikey",
+			sourceLabel:   "config:bedrock",
+			identityParts: []string{"sigv4", "eu-west-1", "https://bedrock.example", "", "ACCESS", "SECRET", "SESSION"},
+			attributes: map[string]string{
+				"auth_mode":         "sigv4",
+				"api_key":           "ACCESS",
+				"access_key_id":     "ACCESS",
+				"secret_access_key": "SECRET",
+				"session_token":     "SESSION",
+				"force_global":      "true",
+			},
+		},
+		{
+			name:          "disabled OpenAI provider uses first non-empty key",
+			kind:          ConfigProviderKindOpenAICompatibility,
+			provider:      "disabled saved provider",
+			identityKind:  "openai-compatibility:disabled saved provider",
+			sourceLabel:   "config:disabled saved provider",
+			identityParts: []string{"first-key", "https://compat.example", "http://first.proxy"},
+			attributes: map[string]string{
+				"api_key":      "first-key",
+				"base_url":     "https://compat.example",
+				"compat_name":  "Disabled Saved Provider",
+				"provider_key": "disabled saved provider",
+			},
+			proxyURL: "http://first.proxy",
+			proxyID:  "first",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			auth, identity, err := BuildConfigProviderAuthSkeleton(cfg, "tenant-a", tt.kind, tt.index)
+			if err != nil {
+				t.Fatalf("BuildConfigProviderAuthSkeleton() error = %v", err)
+			}
+			if auth.TenantID != "tenant-a" || auth.Provider != tt.provider || auth.ProxyURL != tt.proxyURL || auth.ProxyID != tt.proxyID {
+				t.Fatalf("skeleton identity = %+v", auth)
+			}
+			if auth.ID != "" || auth.Status != coreauth.Status("") || auth.Disabled || !auth.CreatedAt.IsZero() || !auth.UpdatedAt.IsZero() {
+				t.Fatalf("skeleton contains runtime state: %+v", auth)
+			}
+			if _, exists := auth.Attributes["source"]; exists {
+				t.Fatalf("skeleton contains source attribute: %#v", auth.Attributes)
+			}
+			if identity.Kind != tt.identityKind || identity.SourceLabel != tt.sourceLabel || len(identity.Parts) != len(tt.identityParts) {
+				t.Fatalf("stable identity = %#v", identity)
+			}
+			for index, want := range tt.identityParts {
+				if got := identity.Parts[index]; got != want {
+					t.Fatalf("identity.Parts[%d] = %q, want %q", index, got, want)
+				}
+			}
+			for key, want := range tt.attributes {
+				if got := auth.Attributes[key]; got != want {
+					t.Fatalf("Attributes[%q] = %q, want %q", key, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildConfigProviderAuthSkeletonRejectsInvalidSelection(t *testing.T) {
+	cfg := &config.Config{GeminiKey: []config.GeminiKey{{APIKey: "key"}}}
+	for _, index := range []int{-1, 1} {
+		if _, _, err := BuildConfigProviderAuthSkeleton(cfg, "tenant-a", ConfigProviderKindGemini, index); err == nil {
+			t.Fatalf("BuildConfigProviderAuthSkeleton() index %d succeeded", index)
+		}
+	}
+	if _, _, err := BuildConfigProviderAuthSkeleton(cfg, "tenant-a", ConfigProviderKind("unknown"), 0); err == nil {
+		t.Fatal("BuildConfigProviderAuthSkeleton() accepted unknown kind")
+	}
+}

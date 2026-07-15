@@ -8,6 +8,8 @@ import (
 func registerManagementAuthRoutes(group *gin.RouterGroup, h *managementhandlers.Handler) {
 	group.GET("/auth-files", h.ListAuthFiles)
 	group.GET("/auth-files/models", h.GetAuthFileModels)
+	group.GET("/auth-files/quota", h.GetAuthFileQuota)
+	group.POST("/auth-files/codex/reset-credit/consume", h.ConsumeCodexResetCredit)
 	group.GET("/model-definitions/:channel", h.GetStaticModelDefinitions)
 	group.GET("/image-generation/channels", h.ListImageGenerationChannels)
 	group.GET("/image-generation/size-presets", h.GetImageGenerationSizePresets)

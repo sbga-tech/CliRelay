@@ -26,7 +26,7 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		routes[key] = route
 	}
 
-	if got, want := len(routes), 262; got != want {
+	if got, want := len(routes), 271; got != want {
 		t.Fatalf("route count = %d, want %d", got, want)
 	}
 	if got, want := sortedRouteKeys(routes), expectedManagementRoutes(); !slices.Equal(got, want) {
@@ -42,7 +42,6 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"PATCH /v0/management/proxy-pool/:id",
 		"GET /v0/management/usage/logs/:id/content",
 		"GET /v0/management/usage/logs/:id/egress",
-		"POST /v0/management/api-call",
 		"PATCH /v0/management/api-key-entries",
 		"POST /v0/management/opencode-go-api-key/usage",
 		"GET /v0/management/cline-api-key",
@@ -56,6 +55,8 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"DELETE /v0/management/ollama-cloud-api-key",
 		"POST /v0/management/ollama-cloud-api-key/usage",
 		"GET /v0/management/auth-files/models",
+		"GET /v0/management/auth-files/quota",
+		"POST /v0/management/auth-files/codex/reset-credit/consume",
 		"GET /v0/management/image-generation/size-presets",
 		"PUT /v0/management/image-generation/size-presets",
 		"GET /v0/management/identity-fingerprint/account",
@@ -71,6 +72,14 @@ func TestRegisterManagementRouteTable(t *testing.T) {
 		"GET /v0/management/public/ping",
 		"GET /v0/management/public/usage/logs/:id/content",
 		"POST /v0/management/public/usage/summary",
+		"POST /v0/management/gemini-api-key/check",
+		"POST /v0/management/claude-api-key/check",
+		"POST /v0/management/codex-api-key/check",
+		"POST /v0/management/vertex-api-key/check",
+		"POST /v0/management/bedrock-api-key/check",
+		"GET /v0/management/claude-api-key/models",
+		"GET /v0/management/codex-api-key/models",
+		"GET /v0/management/openai-compatibility/models",
 	}
 	for _, key := range required {
 		if _, ok := routes[key]; !ok {
@@ -124,6 +133,16 @@ func TestManagementRoutePermissionsComplete(t *testing.T) {
 		{http.MethodDelete, "/v0/management/logs", "system.logs.delete"},
 		{http.MethodPost, "/v0/management/usage/import", "system.config.write"},
 		{http.MethodPost, "/v0/management/usage/auth-file-quota-snapshot", "auth_files.write"},
+		{http.MethodGet, "/v0/management/auth-files/quota", "auth_files.read"},
+		{http.MethodPost, "/v0/management/auth-files/codex/reset-credit/consume", "auth_files.write"},
+		{http.MethodPost, "/v0/management/gemini-api-key/check", "providers.test"},
+		{http.MethodPost, "/v0/management/claude-api-key/check", "providers.test"},
+		{http.MethodPost, "/v0/management/codex-api-key/check", "providers.test"},
+		{http.MethodPost, "/v0/management/vertex-api-key/check", "providers.test"},
+		{http.MethodPost, "/v0/management/bedrock-api-key/check", "providers.test"},
+		{http.MethodGet, "/v0/management/claude-api-key/models", "providers.test"},
+		{http.MethodGet, "/v0/management/codex-api-key/models", "providers.test"},
+		{http.MethodGet, "/v0/management/openai-compatibility/models", "providers.test"},
 		{http.MethodGet, "/v0/management/totally-unknown-route", ""},
 	}
 	for _, item := range locked {
@@ -237,15 +256,18 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/auth-files",
 		"GET /v0/management/auth-files/download",
 		"GET /v0/management/auth-files/models",
+		"GET /v0/management/auth-files/quota",
 		"GET /v0/management/auth-group-model-owner-mappings",
 		"GET /v0/management/auto-update/channel",
 		"GET /v0/management/auto-update/enabled",
 		"GET /v0/management/bedrock-api-key",
+		"GET /v0/management/claude-api-key/models",
 		"GET /v0/management/ccswitch-import-configs",
 		"GET /v0/management/channel-groups",
 		"GET /v0/management/claude-api-key",
 		"GET /v0/management/cline-api-key",
 		"GET /v0/management/codex-api-key",
+		"GET /v0/management/codex-api-key/models",
 		"GET /v0/management/codex-auth-url",
 		"GET /v0/management/codex-oauth-admission",
 		"GET /v0/management/config",
@@ -283,6 +305,7 @@ func expectedManagementRoutes() []string {
 		"GET /v0/management/ollama-cloud-api-key",
 		"GET /v0/management/opencode-go-api-key",
 		"GET /v0/management/openai-compatibility",
+		"GET /v0/management/openai-compatibility/models",
 		"GET /v0/management/proxy-pool",
 		"GET /v0/management/proxy-url",
 		"GET /v0/management/public/ccswitch-import-configs",
@@ -361,8 +384,8 @@ func expectedManagementRoutes() []string {
 		"PATCH /v0/management/usage-statistics-enabled",
 		"PATCH /v0/management/vertex-api-key",
 		"PATCH /v0/management/ws-auth",
-		"POST /v0/management/api-call",
 		"POST /v0/management/auth-files",
+		"POST /v0/management/auth-files/codex/reset-credit/consume",
 		"POST /v0/management/iflow-auth-url",
 		"POST /v0/management/image-generation/test",
 		"POST /v0/management/model-configs",
@@ -371,6 +394,11 @@ func expectedManagementRoutes() []string {
 		"POST /v0/management/cline-api-key/usage",
 		"POST /v0/management/ollama-cloud-api-key/usage",
 		"POST /v0/management/opencode-go-api-key/usage",
+		"POST /v0/management/gemini-api-key/check",
+		"POST /v0/management/claude-api-key/check",
+		"POST /v0/management/codex-api-key/check",
+		"POST /v0/management/vertex-api-key/check",
+		"POST /v0/management/bedrock-api-key/check",
 		"POST /v0/management/proxy-pool/check",
 		"POST /v0/management/public/ccswitch-import-configs",
 		"POST /v0/management/public/usage",

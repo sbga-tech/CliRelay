@@ -55,8 +55,6 @@ func registerManagementSettingsRoutes(group *gin.RouterGroup, h *managementhandl
 	group.PATCH("/proxy-pool/:id", h.PatchProxyPoolEntry)
 	group.POST("/proxy-pool/check", h.PostProxyPoolCheck)
 
-	group.POST("/api-call", h.APITools().APICall)
-
 	group.GET("/quota-exceeded/switch-project", h.GetSwitchProject)
 	group.PUT("/quota-exceeded/switch-project", h.PutSwitchProject)
 	group.PATCH("/quota-exceeded/switch-project", h.PutSwitchProject)

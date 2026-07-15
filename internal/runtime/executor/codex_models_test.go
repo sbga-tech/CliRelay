@@ -41,6 +41,20 @@ func TestParseCodexModelsFromDataAndSlug(t *testing.T) {
 	}
 }
 
+func TestParseCodexModelsStrictRejectsInvalidShapes(t *testing.T) {
+	for _, body := range []string{
+		`{"error":{"id":"gpt-failure"}}`,
+		`{"payload":{"id":"gpt-failure"}}`,
+		`{"data":[]}`,
+		`{"models":[]}`,
+	} {
+		models, ok := parseCodexModelsStrict([]byte(body), 1700000000)
+		if ok || len(models) != 0 {
+			t.Fatalf("body=%s models=%v ok=%v", body, models, ok)
+		}
+	}
+}
+
 func TestParseCodexModelsLooseNested(t *testing.T) {
 	body := []byte(`{
 		"payload": {
@@ -88,6 +102,22 @@ func TestBuildCodexModelsURL(t *testing.T) {
 	if !isManifest || !strings.Contains(url, "/codex/models") {
 		t.Fatalf("chatgpt backend url=%q isManifest=%v", url, isManifest)
 	}
+
+	url, isManifest = buildCodexModelsURL("https://chatgpt.com.evil/backend-api", false, "0.180.0")
+	if isManifest || url != "https://chatgpt.com.evil/backend-api/models" {
+		t.Fatalf("lookalike ChatGPT url=%q isManifest=%v", url, isManifest)
+	}
+	url, isManifest = buildCodexModelsURL("https://api.openai.com.evil", false, "0.180.0")
+	if isManifest || url != "https://api.openai.com.evil/models" {
+		t.Fatalf("lookalike OpenAI url=%q isManifest=%v", url, isManifest)
+	}
+}
+
+func TestBuildCodexModelsURLUsesOpenAIDefaultForBlankAPIKeyBase(t *testing.T) {
+	url, isManifest := buildCodexModelsURL("", true, "")
+	if isManifest || url != "https://api.openai.com/v1/models" {
+		t.Fatalf("blank API-key url=%q isManifest=%v", url, isManifest)
+	}
 }
 
 func TestFetchCodexModelsAPIKeyCatalog(t *testing.T) {
@@ -97,6 +127,9 @@ func TestFetchCodexModelsAPIKeyCatalog(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
 			t.Fatalf("path=%q", r.URL.Path)
+		}
+		if got := r.Host; got != "codex.saved-host.test" {
+			t.Fatalf("Host=%q", got)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {
 			t.Fatalf("Authorization=%q", got)
@@ -109,12 +142,39 @@ func TestFetchCodexModelsAPIKeyCatalog(t *testing.T) {
 	models := FetchCodexModels(context.Background(), &cliproxyauth.Auth{
 		Provider: "codex",
 		Attributes: map[string]string{
-			"api_key":  "sk-test",
-			"base_url": srv.URL,
+			"api_key":     "sk-test",
+			"base_url":    srv.URL,
+			"header:Host": "codex.saved-host.test",
 		},
 	}, nil)
 	if len(models) != 1 || models[0].ID != "codex-live-1" {
 		t.Fatalf("models=%v", models)
+	}
+}
+
+func TestFetchCodexModelsStrictRejectsErrorPayloadWithoutCache(t *testing.T) {
+	resetCodexModelsCacheForTest()
+	t.Cleanup(resetCodexModelsCacheForTest)
+	if ok := storeCodexModels([]*sdkmodelcatalog.ModelInfo{{ID: "cached-codex"}}); !ok {
+		t.Fatal("cache seed failed")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"error":{"id":"gpt-failure"}}`))
+	}))
+	defer srv.Close()
+
+	models, err := FetchCodexModelsStrict(context.Background(), &cliproxyauth.Auth{Attributes: map[string]string{
+		"api_key":  "sk-test",
+		"base_url": srv.URL,
+	}}, nil)
+	if err == nil {
+		t.Fatal("expected invalid payload error")
+	}
+	if len(models) != 0 {
+		t.Fatalf("strict models=%v, must not return cache", models)
+	}
+	if cached := loadCodexModels(); len(cached) != 1 || cached[0].ID != "cached-codex" {
+		t.Fatalf("strict fetch changed runtime cache: %v", cached)
 	}
 }
 
